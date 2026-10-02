@@ -1,7 +1,7 @@
 import { z } from "zod";
 
 /**
- * The `/cli/*` HTTP contract between the EZiL CLI and the EZiL Works API (`apps/api/src/routes/cli.ts`).
+ * The `/cli/*` HTTP contract between the EZiL CLI (EZiLHQ/ezil-cli) and the EZiL Works API (`apps/api/src/routes/cli.ts`).
  *
  * The same file lives in both repositories, and each has a test pinning its digest (see `digest.ts`), so neither
  * side can change the wire format alone. Requests are strict, because the server refuses unknown fields. Responses
