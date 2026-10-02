@@ -4,6 +4,10 @@ updates:
     directory: /
     schedule: { interval: weekly }
     open-pull-requests-limit: 5
+    ignore:
+      # Pinned exactly: zod's version is part of the wire-contract digest shared with the EZiL Works API
+      # (two releases validate iso.datetime() differently). Upgrade it in both repositories together.
+      - dependency-name: zod
     groups:
       dev-dependencies: { dependency-type: development }
   - package-ecosystem: github-actions
