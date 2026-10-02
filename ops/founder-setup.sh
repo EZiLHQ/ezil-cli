@@ -2,7 +2,8 @@
 # One-time setup for EZiLHQ/ezil-cli CI/CD. Run by the founder: it writes secrets and registers a runner,
 # which the agent's permission guard refuses. Idempotent; prints no secret value.
 #
-#   bash "/data/openclaw/projects/ezil/EZiL CLI/ops/founder-setup.sh"
+#   bash "/data/openclaw/projects/ezil/EZiL CLI/ops/founder-setup.sh"          # everything
+#   bash "/data/openclaw/projects/ezil/EZiL CLI/ops/founder-setup.sh" runner   # only the runner (step 3)
 #
 # 1. GitHub environments staging + production.
 # 2. Repo secrets: Cloudflare token + account (from EZiL-Works/apps/api/.env), the gateway HMAC and IP salt
@@ -21,6 +22,8 @@ ENV_FILE=/data/openclaw/projects/ezil/EZiL-Works/apps/api/.env
 SECRETS=/root/.config/ezil-git-gateway
 val() { grep -m1 "^$1=" "$ENV_FILE" | cut -d= -f2- | tr -d '\r'; }
 
+# `founder-setup.sh runner` re-runs only step 3.
+if [[ "${1:-}" != "runner" ]]; then
 echo "== 1. environments"
 for e in staging production; do gh api -X PUT "repos/$REPO/environments/$e" >/dev/null && echo "  $e"; done
 
@@ -31,6 +34,7 @@ tr -d '\n' < "$SECRETS/git-gateway-secret" | gh secret set GIT_GATEWAY_SECRET --
 tr -d '\n' < "$SECRETS/ip-hash-salt"       | gh secret set IP_HASH_SALT       --repo "$REPO"
 printf %s "${EZIL_E2E_QA_PASSWORD:-qa-account-strong-pw}" | gh secret set EZIL_E2E_QA_PASSWORD --repo "$REPO"
 gh secret list --repo "$REPO" | awk '{print "  " $1}'
+fi
 
 echo "== 3. runner ezil-aws-cli on $INSTANCE"
 cleanup() {
@@ -65,11 +69,12 @@ cd "$dir" && runuser -u "$user" -- ./config.sh --unattended --url https://github
 unset token
 ./svc.sh install "$user" >/dev/null && ./svc.sh start >/dev/null
 rm -f "$archive"; echo registered"""
-json.dump({"commands": [script]}, open(out, "w"))
+# AWS-RunShellScript runs /bin/sh (dash on Ubuntu), which has no pipefail: hand the script to bash.
+json.dump({"commands": ["bash -s <<'EZIL_RUNNER_EOF'\n" + script + "\nEZIL_RUNNER_EOF"]}, open(out, "w"))
 PY
 CMD_ID=$(aws ssm send-command --region "$REGION" --instance-ids "$INSTANCE" --document-name AWS-RunShellScript \
   --comment "register ezil-aws-cli runner" --parameters "file://$CMD_FILE" --query Command.CommandId --output text)
-aws ssm wait command-executed --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE" || true
+aws ssm wait command-executed --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE" 2>/dev/null || true
 aws ssm get-command-invocation --region "$REGION" --command-id "$CMD_ID" --instance-id "$INSTANCE" \
   --query '{status:Status,out:StandardOutputContent,err:StandardErrorContent}' --output json
 gh api "repos/$REPO/actions/runners" -q '.runners[]|"  runner \(.name) \(.status) labels=\([.labels[].name]|join(","))"'
