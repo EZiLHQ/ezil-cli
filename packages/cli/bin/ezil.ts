@@ -11,6 +11,8 @@
  * See `src/hook.ts` for the three constraints and why each one exists.
  */
 
+import { spawn, spawnSync } from "node:child_process";
+
 import {
 	connect,
 	connectNotice,
@@ -101,12 +103,14 @@ function realIo(): Io {
 		sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
 		openBrowser: url => {
 			const cmd = process.platform === "darwin" ? ["open", url] : process.platform === "win32" ? ["cmd", "/c", "start", "", url] : ["xdg-open", url];
-			try { Bun.spawn(cmd, { stdout: "ignore", stderr: "ignore", stdin: "ignore" }).unref(); } catch { /* the URL is printed anyway */ }
+			try { spawn(cmd[0]!, cmd.slice(1), { stdio: "ignore", detached: true }).on("error", () => {}).unref(); } catch { /* the URL is printed anyway */ }
 		},
 		run: (cmd, stdin) => {
 			try {
-				const result = Bun.spawnSync(cmd, { stdin: stdin === undefined ? "ignore" : new TextEncoder().encode(stdin), stdout: "pipe", stderr: "ignore" });
-				return { code: result.exitCode ?? 1, stdout: result.stdout.toString() };
+				// node:child_process, not Bun's: the same bin runs under Bun from source and under Node from npm.
+				const result = spawnSync(cmd[0]!, cmd.slice(1), { ...(stdin === undefined ? {} : { input: stdin }), stdio: [stdin === undefined ? "ignore" : "pipe", "pipe", "ignore"] });
+				if (result.error) return { code: 127, stdout: "" };
+				return { code: result.status ?? 1, stdout: result.stdout?.toString() ?? "" };
 			} catch { return { code: 127, stdout: "" }; }
 		},
 	};

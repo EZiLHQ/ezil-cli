@@ -1,7 +1,8 @@
 name: EZiL CLI CI/CD
 
 # check → staging (deploy gateway + live E2E) → production (deploy gateway + live smoke); tags v* → release binaries.
-# Runs on the private AWS runner service for this repository (label ezil-private), like ezil-work and ezil-ai-gateway.
+# Public repository: every job runs on GitHub-hosted runners. Self-hosted runners must never serve a public repository,
+# because a fork's pull request runs the workflow file from the fork.
 on:
   pull_request:
   push:
@@ -25,7 +26,7 @@ jobs:
       github.event_name != 'pull_request' ||
       (!github.event.pull_request.draft &&
        github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, linux, x64, ezil-private]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -35,13 +36,13 @@ jobs:
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
-      - name: Typecheck and test (unit, gateway, full-chain e2e) under the host build lock
-        run: flock --wait 1800 /var/lock/ezil-ci/build.lock bash -c 'bun run typecheck && env -i PATH="$PATH" HOME="$HOME" CI=true bun run test'
+      - name: Typecheck and test (unit, gateway, full-chain e2e, install)
+        run: bun run typecheck && env -i PATH="$PATH" HOME="$HOME" CI=true bun run test
 
   staging:
     needs: check
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    runs-on: [self-hosted, linux, x64, ezil-private]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: staging
     concurrency:
@@ -87,7 +88,7 @@ jobs:
   production:
     needs: staging
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && needs.staging.result == 'success'
-    runs-on: [self-hosted, linux, x64, ezil-private]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: production
     concurrency:
@@ -157,10 +158,11 @@ jobs:
   release:
     needs: check
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: [self-hosted, linux, x64, ezil-private]
+    runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write
+      id-token: write # npm provenance
     steps:
       - uses: actions/checkout@v4
         with:
@@ -195,6 +197,18 @@ jobs:
           export EZIL_INSTALL_DIR="$RUNNER_TEMP/ezil-bin" EZIL_VERSION="${GITHUB_REF_NAME#v}"
           curl -fsSL https://github.ezil.work/install.sh | sh
           EZIL_LIVE_GATEWAY=github.ezil.work EZIL_CLI_BIN="$EZIL_INSTALL_DIR/ezil" bun tests/live/live.ts
+      - name: Publish @ezil/cli to npm (skipped until the NPM_TOKEN secret exists)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "::warning::NPM_TOKEN is not set; npm publish skipped"; exit 0; fi
+          version="${GITHUB_REF_NAME#v}"
+          bash .github/scripts/build-npm.sh "$version" "$RUNNER_TEMP/npm"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/.npmrc"
+          if npm view "@ezil/cli@$version" version >/dev/null 2>&1; then echo "@ezil/cli@$version is already published"; exit 0; fi
+          (cd "$RUNNER_TEMP/npm" && npm publish --access public --provenance --userconfig "$RUNNER_TEMP/.npmrc")
+          rm -f "$RUNNER_TEMP/.npmrc"
       - name: Publish the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

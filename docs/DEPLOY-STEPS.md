@@ -10,14 +10,14 @@
 
 **To release:** bump `packages/cli/package.json`, merge, wait for the `main` run, then `git tag v<version> && git push origin v<version>`.
 
-The jobs run on this repository's own runner service `ezil-aws-cli` (label `ezil-private`). It's on the same private AWS host as `ezil-aws-works` and `ezil-aws-gateway`.
+All jobs run on GitHub-hosted runners. The repository is public, so a self-hosted runner must never serve it: a fork's pull request runs the workflow file from the fork. The `ezil-aws-cli` runner service was deregistered on 2026-10-02. Workflows from outside contributors need approval every time (`all_external_contributors`).
 
 ## One-time setup (founder)
 
 Run `bash "/data/openclaw/projects/ezil/EZiL CLI/ops/founder-setup.sh"`. It:
 - creates the `staging` and `production` environments;
 - sets the repo secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `GIT_GATEWAY_SECRET`, `IP_HASH_SALT` and `EZIL_E2E_QA_PASSWORD`;
-- registers the runner service. It follows the same procedure as `EZiL-Works/infra/aws-runner/register.sh`: a short-lived token through an SSM SecureString, plus a temporary read policy, both removed afterwards.
+- sets `NPM_TOKEN` from `~/.npmrc`, for the release job's `npm publish`.
 
 No value is printed. The script reads the gateway secret and salt from `/root/.config/ezil-git-gateway/`. They are the same values the Works API (Vercel `GIT_GATEWAY_SECRET`) and the staging Worker already hold.
 
@@ -40,7 +40,6 @@ Between steps 2 and 4, the gateway fails closed (503), and no access is granted.
 ## Known limits (from the independent review, 2026-10-02)
 - **Staging is a second production edge.** `git-staging.ezil.work` talks to the production Works API (`api.ezil.work`; there is no staging API) with the same `GIT_GATEWAY_SECRET`. Its live E2E pushes a throwaway branch to a real QA-tenant repository and deletes it. What staging isolates is the gateway code, not the data.
 - **The GitHub environments have no reviewers,** and the secrets are repository-level. So `production` runs automatically after a green staging run, the same as `ezil-ai-gateway`. To gate production, add a required reviewer to the `production` environment.
-- **The runner user is in the `docker` group,** so the `check` job of a same-repository PR has near-root access to the shared host. That's the same as the existing `register.sh` services. Fork PRs never run on it.
-- **The QA builder's password is the seeded default** in EZiL-Works `tools/seed-qa.ts`, and it is known to anyone with read access to that repository. Rotating it means updating the account, the `EZIL_E2E_QA_PASSWORD` secret, and the Works QA suites together.
+- **The QA builder's password was published.** It's the seeded default in EZiL-Works `tools/seed-qa.ts`, and it appeared in `ops/founder-setup.sh` while this repository was public. Treat it as compromised and rotate it: update the account, the `EZIL_E2E_QA_PASSWORD` secret here, and the Works QA suites together.
 - **`/health` is public** and shows the deployed commit SHA.
 - **The contract digests pin each repository against itself only.** Cross-repository compatibility is proven at runtime: the gateway parses production answers strictly, and the live E2E parses `/cli` answers. See `packages/contract/src/digest.test.ts`.
