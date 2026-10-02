@@ -197,7 +197,11 @@ jobs:
           awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {on=0} on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
           test -s "$RUNNER_TEMP/notes.md" || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
           printf '\nInstall: `npm install -g @ezilhq/cli`, or `curl -fsSL https://github.ezil.work/install.sh | sh` (macOS, Linux), or `irm https://github.ezil.work/install.ps1 | iex` (Windows). Binaries are unsigned; verify them with SHA256SUMS.\n' >> "$RUNNER_TEMP/notes.md"
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "EZiL CLI $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME exists (a re-run); keeping its assets"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "EZiL CLI $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
+          fi
       - name: Install from the live URL and run the live E2E with the installed binary
         env:
           EZIL_E2E_QA_EMAIL: ${{ vars.EZIL_E2E_QA_EMAIL }}
@@ -217,6 +221,8 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$NODE_AUTH_TOKEN" ]; then echo "::error::NPM_TOKEN is not set"; exit 1; fi
+          # The token must be able to publish without a one-time password (a granular token with "bypass 2FA",
+          # or replace this step with npm trusted publishing); otherwise npm answers EOTP.
           version="${GITHUB_REF_NAME#v}"
           bash .github/scripts/build-npm.sh "$version" "$RUNNER_TEMP/npm"
           printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/.npmrc"
