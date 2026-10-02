@@ -1,14 +1,15 @@
 {
-  "name": "@ezil/git-gateway",
-  "private": true,
-  "type": "module",
-  "scripts": {
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.dev.json"
-  },
-  "dependencies": {
-    "@ezil/cli-contract": "workspace:*"
-  },
-  "devDependencies": {
-    "wrangler": "^4.42.0"
-  }
+	"name": "@ezil/git-gateway",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.dev.json"
+	},
+	"dependencies": {
+		"@ezil/cli-contract": "workspace:*"
+	},
+	"devDependencies": {
+		"wrangler": "^4.42.0"
+	},
+	"license": "Apache-2.0"
 }

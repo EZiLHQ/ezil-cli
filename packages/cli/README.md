@@ -1,11 +1,13 @@
-# `@ezil/cli` — session evidence, from the machine the work happens on
+# `ezil` sessions module — session evidence, from the machine the work happens on
+
+This is the session-evidence half of the [`@ezilhq/cli`](https://www.npmjs.com/package/@ezilhq/cli) package (`ezil connect | hook | flush`). Git sign-in (`ezil auth login`) is described in the [repository README](https://github.com/EZiLHQ/ezil-cli#readme).
 
 ```bash
 claude mcp add --transport http ezil https://mcp.ezil.work/mcp
-npx @ezil/cli connect
+ezil connect
 ```
 
-Two commands, and they are the same two the Connect screen at
+Two commands (after `npm install -g @ezilhq/cli`), the same two the Connect screen at
 `/profile/connect` shows you. The first adds `mcp.ezil.work` to your MCP
 client; the second signs you in, stores your credential, records the
 connection against your account, resolves today's contract, and merges six
@@ -22,9 +24,9 @@ For a runner with no terminal to type into, set `EZIL_EMAIL` and
 `EZIL_PASSWORD` in the environment instead and `connect` will not prompt.
 
 ```bash
-npx @ezil/cli connect                       # asks you
-EZIL_EMAIL=… EZIL_PASSWORD=… npx @ezil/cli connect   # does not
-npx @ezil/cli connect --api https://api.ezil.work    # a different deployment
+ezil connect                       # asks you
+EZIL_EMAIL=… EZIL_PASSWORD=… ezil connect   # does not
+ezil connect --api https://api.ezil.work    # a different deployment
 ```
 
 ### `--token` is the escape hatch, not the path
@@ -65,29 +67,30 @@ here is subordinate to the hook being unable to interrupt the work:
 
 - **session start** — repository, branch, head commit, model id
 - **each prompt** — a SHA-256 digest, and a redacted opening of at most 512
-  characters
+  characters (that opening is sent: do not put secrets in prompts)
 - **each tool call** — the tool's name, a redacted command, and the file **path
   only**
 - **each tool result** — the exit status *if one was reported*, the byte count,
-  and a redacted excerpt of at most the first and last 4 KB
+  and a redacted excerpt of at most the first and last 4 KB (output can contain
+  sensitive data; redaction removes known credential shapes, not everything)
 - **session end** — head commit, whether the tree was dirty, elapsed time
 
 ## What is not sent
 
-- **Your prompts.** The wire contract
-  (`packages/contracts/src/surface/session-evidence.ts`) has no `verbatim` field
-  and is strict, so a producer that added one would be refused by name rather
-  than quietly stored. Verbatim prompt capture is a founder decision that has
-  not been taken.
+- **Your full prompts.** Only the digest and the redacted opening above. The
+  wire contract (`packages/contract/src/session-evidence.ts`) has no `verbatim`
+  field and is strict, so a producer that added one would be refused by name
+  rather than quietly stored.
 - **File contents, diffs or patches.** No field carries them. The repositories
   you work in belong to clients.
 - **Anything outside this repository.** A tool that acts elsewhere is recorded
   as having done so — with no path and no command. The contract *refuses* an
   event that is marked outside and carries either.
-- **Credentials.** Anything shaped like an API key, a GitHub token, an AWS key
-  id, a JWT or a PEM private key is replaced before it reaches the spool. If one
-  gets past that, the server **refuses the whole batch** rather than scrubbing
-  it and storing the rest.
+- **Recognisable credentials.** Anything shaped like an API key, a GitHub token,
+  an AWS key id, a JWT or a PEM private key is replaced before it reaches the
+  spool. If one gets past that, the server **refuses the whole batch** rather than
+  scrubbing it and storing the rest. Pattern-based redaction cannot catch every
+  secret, which is why prompts and excerpts are short.
 
 ## The rung this can reach
 

@@ -1,11 +1,11 @@
 import { z } from "zod";
 
 /**
- * The `/cli/*` HTTP contract between the EZiL CLI (EZiLHQ/ezil-cli) and the EZiL Works API (`apps/api/src/routes/cli.ts`).
+ * The `/cli/*` HTTP contract between the EZiL CLI (EZiLHQ/ezil-cli) and the EZiL Works API.
  *
- * The same file lives in both repositories, and each has a test pinning its digest (see `digest.ts`), so neither
- * side can change the wire format alone. Requests are strict, because the server refuses unknown fields. Responses
- * are open, so the server may add a field without breaking a CLI already installed on a builder's machine.
+ * The EZiL Works repository keeps the same file. Each repository pins its digest
+ * (see `digest.ts`) to detect local wire-format changes. Requests are strict because
+ * the API refuses unknown fields. Responses allow additions without breaking installed clients.
  */
 
 export const CLI_OS = ["darwin", "linux", "win32", "freebsd", "other"] as const;

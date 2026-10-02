@@ -217,9 +217,8 @@ describe("exitCodeIn", () => {
 	/**
 	 * The decision this whole file is most exposed on, asserted directly.
 	 *
-	 * A `0` invented for "the tool call did not error" would turn a red suite
-	 * into a green claim in `crossCheckSession` -- FD-03's QA collapse
-	 * manufactured by the evidence pipeline itself. `null` produces no claim.
+	 * A made-up zero could turn a failed suite into a passing claim in EZiL's
+	 * evidence cross-check. Null produces no claim when the status is unknown.
 	 */
 	it("answers null when no status was reported, and never zero", () => {
 		expect(exitCodeIn({ stdout: "ok", stderr: "" })).toBeNull();

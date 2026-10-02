@@ -21,10 +21,10 @@ import { handle } from "../../apps/git-gateway/src/gateway";
  * → the github.ezil.work gateway (the real handler) → a stand-in EZiL Works API → a stand-in Cloudflare Artifacts
  * that is a real Git server (`git http-backend`) and enforces a repo-scoped bearer whose scope covers the service.
  *
- * The Works stand-in is contract-faithful, not clever: it parses every request and every response with the pinned
- * schemas in `packages/contract`, and it checks the gateway's HMAC exactly as Works does. Real Works authority
- * (tasks, selections, audit chain) is proven in EZiL-Works' own `cli.test.ts`, and the deployed pair is proven by
- * `tests/live` against git-staging.ezil.work.
+ * The Works stand-in parses requests and responses with the pinned schemas in `packages/contract`
+ * and checks the gateway's HMAC as the EZiL Works API does. Tests in the EZiL Works repository
+ * verify task authority, selections and the audit chain. `tests/live` checks the deployed pair
+ * against git-staging.ezil.work.
  */
 const SECRET = "e".repeat(48);
 const LABEL = "0123456789abcdef0123456789abcdef";

@@ -1,12 +1,12 @@
 #!/usr/bin/env bun
 /**
  * Live end-to-end check of the deployed EZiL Git path: the real CLI → the deployed gateway → the deployed EZiL Works
- * API → real Cloudflare Artifacts, signed in as the shared QA builder. CI runs it after every gateway deploy;
+ * API → real Cloudflare Artifacts, signed in as a dedicated QA builder. CI runs it after every gateway deploy;
  * a person can run it by hand. It never prints a credential.
  *
  *   EZIL_LIVE_GATEWAY   gateway host, default git-staging.ezil.work (github.ezil.work for production)
  *   EZIL_API_ORIGIN     default https://api.ezil.work
- *   EZIL_E2E_QA_EMAIL   default qa-builder@ezil.work
+ *   EZIL_E2E_QA_EMAIL   a dedicated QA builder account (required)
  *   EZIL_E2E_QA_PASSWORD
  *
  * The CLI's credential helper answers only for github.ezil.work and git.ezil.work. For any other gateway host the
@@ -24,7 +24,7 @@ import { ApproveLoginResponseSchema, DescribeLoginResponseSchema, WhoamiResponse
 
 const GATEWAY = process.env["EZIL_LIVE_GATEWAY"] ?? "git-staging.ezil.work";
 const API = (process.env["EZIL_API_ORIGIN"] ?? "https://api.ezil.work").replace(/\/+$/, "");
-const EMAIL = process.env["EZIL_E2E_QA_EMAIL"] ?? "qa-builder@ezil.work";
+const EMAIL = process.env["EZIL_E2E_QA_EMAIL"];
 const PASSWORD = process.env["EZIL_E2E_QA_PASSWORD"];
 const CLI = join(import.meta.dir, "..", "..", "packages", "cli", "bin", "ezil.ts");
 /** EZIL_CLI_BIN tests an installed binary (the release job sets it); otherwise this checkout's source runs under Bun. */
@@ -33,7 +33,7 @@ const EZIL: string[] = INSTALLED ? [INSTALLED] : [process.execPath, CLI];
 const EZIL_SHELL = EZIL.map(part => `'${part.replace(/'/g, "'\\''")}'`).join(" ");
 const LEAK = /egg_[0-9a-f]{8}|art_v1_|eca_[0-9a-f]|ecr_[0-9a-f]|ecd_[0-9a-f]/;
 
-if (!PASSWORD) { console.error("EZIL_E2E_QA_PASSWORD is required."); process.exit(2); }
+if (!EMAIL || !PASSWORD) { console.error("EZIL_E2E_QA_EMAIL and EZIL_E2E_QA_PASSWORD are required."); process.exit(2); }
 // The helper wrapper below rewrites `host=` past the CLI's own allow-list and puts this name in a shell line, so it
 // must be an EZiL host and a plain hostname: a grant can then only ever be sent to an EZiL edge.
 if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*\.ezil\.work$/.test(GATEWAY)) { console.error(`EZIL_LIVE_GATEWAY must be an *.ezil.work host, got ${JSON.stringify(GATEWAY)}.`); process.exit(2); }

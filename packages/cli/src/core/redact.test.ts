@@ -5,11 +5,9 @@ import { excerptOf, redact, redactionsIn, REDACTED } from "./redact";
 /**
  * The hook's redaction, held to the same vectors as the server's refusal.
  *
- * `apps/api/src/routes/sessions.test.ts` runs this same table against
- * `secretPatternsIn`. The two implementations are deliberately separate -- see
- * `redact.ts` -- and the tables being the same is what keeps them honest: a
- * pattern added on one side and not the other shows up as a vector that the
- * server refuses and the hook did not strip.
+ * The EZiL Works repository tests its session-ingest refusal against the same
+ * vectors. The implementations are deliberately separate (see `redact.ts`);
+ * matching vectors expose patterns the API refuses but the hook fails to strip.
  */
 
 const vectors: readonly { readonly name: string; readonly text: string; readonly pattern: string }[] = [

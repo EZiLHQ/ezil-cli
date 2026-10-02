@@ -5,10 +5,10 @@ import { splitReceivePack } from "./pkt-line";
 import { sha256Hex, signedHeaders } from "./sign";
 
 /**
- * github.ezil.work: Git smart HTTP in front of Cloudflare Artifacts (EZiL CLI plan, section C).
+ * github.ezil.work: Git smart HTTP in front of Cloudflare Artifacts. See docs/ARCHITECTURE.md.
  *
  * The client presents an EZiL git grant (Basic auth, issued by `ezil git-credential`). Every request
- * is authorized by the Works API, which mints an Artifacts token with the exact scope for the
+ * is authorized by the EZiL Works API, which mints an Artifacts token with the exact scope for the
  * Git service. That token lives only inside the upstream request, so it never reaches the client
  * and never reaches a log.
  */
@@ -20,8 +20,8 @@ export interface GatewayEnv {
 	/** The commit CI deployed (`wrangler deploy --var EZIL_COMMIT:<sha>`), reported by /health. */
 	readonly EZIL_COMMIT?: string;
 	readonly RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
-	/** R2 `ezil-cli-releases`: `cli/latest` and `cli/<version>/<file>`, written only by the ezil-cli release job. */
-	readonly RELEASES?: { get(key: string): Promise<{ body: ReadableStream; size: number; httpEtag: string } | null> };
+	/** Where release files live; default the public GitHub releases of EZiLHQ/ezil-cli. Tests point it elsewhere. */
+	readonly RELEASES_ORIGIN?: string;
 }
 export interface GatewayDeps {
 	readonly fetch: (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -42,25 +42,31 @@ const text = (status: number, body: string, headers: Record<string, string> = {}
 /** Release files: one binary per target, plus SHA256SUMS. Nothing else in the bucket is reachable. */
 const RELEASE_FILE = /^\/cli\/(\d{1,4}\.\d{1,4}\.\d{1,6})\/(ezil-\1-(?:darwin-arm64|darwin-x64|linux-x64|linux-arm64|windows-x64\.exe)|SHA256SUMS)$/;
 
-/** The public, unauthenticated download surface: installers, the latest version, and release files. */
-async function download(pathname: string, env: GatewayEnv): Promise<Response | null> {
+export const DEFAULT_RELEASES_ORIGIN = "https://github.com/EZiLHQ/ezil-cli/releases";
+
+/**
+ * The public, unauthenticated download surface: the installers, the latest version, and redirects to release files.
+ * Files are served by the GitHub release itself (so its SHA256SUMS is the one published with the binaries); this only
+ * gives them a stable EZiL address. `/cli/latest` follows the release page's own redirect to the newest tag.
+ */
+async function download(pathname: string, env: GatewayEnv, deps: GatewayDeps): Promise<Response | null> {
 	const script = (body: string) => new Response(body, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=300" } });
 	if (pathname === "/install.sh") return script(INSTALL_SH);
 	if (pathname === "/install.ps1") return script(INSTALL_PS1);
-	const file = pathname === "/cli/latest" ? null : RELEASE_FILE.exec(pathname);
-	if (pathname !== "/cli/latest" && !file) return null;
-	if (!env.RELEASES) return text(503, "EZiL: downloads are unavailable. Try again shortly.\n", { "retry-after": "60" });
-	const key = file ? `cli/${file[1]}/${file[2]}` : "cli/latest";
-	const object = await env.RELEASES.get(key);
-	if (!object) return text(404, "Not found.\n");
-	const textual = !file || file[2] === "SHA256SUMS";
-	return new Response(object.body, { headers: {
-		"content-type": textual ? "text/plain; charset=utf-8" : "application/octet-stream",
-		"content-length": String(object.size), etag: object.httpEtag,
-		// A versioned file never changes; `latest` moves on each release.
-		"cache-control": file ? "public, max-age=31536000, immutable" : "public, max-age=60",
-		...(file && !textual ? { "content-disposition": `attachment; filename="${file[2]}"` } : {}),
-	} });
+	const origin = (env.RELEASES_ORIGIN ?? DEFAULT_RELEASES_ORIGIN).replace(/\/+$/, "");
+	if (pathname === "/cli/latest") {
+		let location: string | null = null;
+		try {
+			const answer = await deps.fetch(`${origin}/latest`, { method: "HEAD", redirect: "manual", signal: AbortSignal.timeout(5000) });
+			location = answer.headers.get("location");
+		} catch { /* below */ }
+		const version = location ? /\/tag\/v(\d{1,4}\.\d{1,4}\.\d{1,6})$/.exec(location)?.[1] : undefined;
+		if (!version) return text(503, "EZiL: the latest version is unavailable. Try again shortly.\n", { "retry-after": "60" });
+		return new Response(version, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=60" } });
+	}
+	const file = RELEASE_FILE.exec(pathname);
+	if (!file) return null;
+	return new Response(null, { status: 302, headers: { location: `${origin}/download/v${file[1]}/${file[2]}`, "cache-control": "public, max-age=3600" } });
 }
 
 const maskRemote = (url: string) => url.replace(/^https:\/\/[0-9a-f]{32}\./, "https://***.");
@@ -109,7 +115,7 @@ export async function handle(request: Request, env: GatewayEnv, deps: GatewayDep
 		return finish(Response.json({ ok: true, commit: env.EZIL_COMMIT ?? null, configured: Boolean(env.API_ORIGIN && env.GIT_GATEWAY_SECRET && env.IP_HASH_SALT) },
 			{ headers: { "cache-control": "no-store" } }));
 	if (request.method === "GET" || request.method === "HEAD") {
-		const served = await download(url.pathname, env);
+		const served = await download(url.pathname, env, deps);
 		if (served) return finish(served);
 	}
 	if (url.pathname === "/" && request.method === "GET")

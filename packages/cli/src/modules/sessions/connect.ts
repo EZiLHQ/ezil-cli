@@ -9,30 +9,13 @@ import { desiredHooks, mergeHooks, TOOL_MATCHER } from "./settings-merge";
  * `ezil connect` -- the sign-in, the credential, the connection, the contract,
  * and the six hooks.
  *
- * ==========================================================================
- * THE CLAUSE THIS COMMAND COULD NOT IMPLEMENT, AND NOW CAN
- * ==========================================================================
+ * The Works sign-in route POST /auth/signin proxies the Supabase password
+ * grant with the publishable key held server-side. The documented path uses
+ * email and password; `--token` / `EZIL_ACCESS_TOKEN` accepts an existing
+ * session. See {@link resolveGrant} and `docs/ARCHITECTURE.md`.
  *
- * This header used to say that `POST /auth/signin` **does not exist**, and that
- * `connect` therefore had to take a bearer the worker already had. That was
- * true when it was written and stopped being true when `docs/TASKS.csv` **T8**
- * landed: `apps/api/src/routes/identity.ts` now serves `/auth/signin`,
- * `/auth/refresh` and `/auth/config`, and the first is a proxy of the same
- * Supabase password grant the browser runs -- with the publishable key held
- * server-side, "because this caller has no bundle to hold it".
- *
- * So the documented path is an email and a password, and `--token` /
- * `EZIL_ACCESS_TOKEN` survives as an escape hatch for a worker who already has
- * a session and would rather not type a password into a terminal. See
- * {@link resolveGrant}.
- *
- * ### The one thing still to know about `/auth/signin`
- *
- * It answers **501 `not_implemented`** on a deployment where the Supabase
- * publishable key is not configured -- `identity.ts`'s `publishableKeyOf`
- * names the exact three lines `env.ts` needs. That is a deployment state, not
- * a credential problem, and {@link signIn} keeps it as its own named refusal so
- * a worker is not told their password is wrong when the server is unconfigured.
+ * An unconfigured Supabase publishable key produces 501 `not_implemented`.
+ * {@link signIn} reports this as a deployment problem rather than a bad password.
  *
  * ## What connecting changes on the worker's machine, and in what order
  *
@@ -45,11 +28,11 @@ import { desiredHooks, mergeHooks, TOOL_MATCHER } from "./settings-merge";
  *      `POST /auth/signin`. A refusal here throws; it is not the soft
  *      "no contract today" shape, because a `connect` with no credential has
  *      not connected.
- *   2. `~/.ezil/credentials`, mode 0600, holding the bearer (and now the
- *      refresh token, which `/auth/refresh` gives something to exchange).
- *   3. `POST /v1/builder/mcp-connection` -- the record invariant 13's gate
- *      reads. Soft, like the contract: a builder with no profile row yet still
- *      wants their hooks.
+ *   2. `~/.ezil/credentials`, mode 0600, holding the bearer and any refresh
+ *      token returned by sign-in.
+ *   3. `POST /v1/builder/mcp-connection` -- the record the connection gate
+ *      checks. Failure is soft, like the contract: a builder with no profile
+ *      row yet still wants their hooks.
  *   4. `<project>/.claude/settings.json`, MERGED. Whatever is already in it
  *      stays; see `settings-merge.ts`.
  *
@@ -65,7 +48,7 @@ import { desiredHooks, mergeHooks, TOOL_MATCHER } from "./settings-merge";
 export interface ConnectOptions {
 	readonly apiOrigin: string;
 	/**
-	 * The escape hatch, no longer the documented path.
+ * An existing bearer as an alternative to signing in.
 	 *
 	 * Present means "use this bearer and do not ask for anything"; absent means
 	 * sign in. See {@link resolveGrant}.
@@ -98,9 +81,9 @@ export type CredentialPrompt = (question: string, secret: boolean) => Promise<st
 /**
  * A grant, however it was obtained.
  *
- * `refreshToken` is `null` for the `--token` path -- a pasted bearer comes with
- * nothing to exchange -- and a real value after a sign-in, because `T8` landed
- * `POST /auth/refresh` to exchange it with.
+ * `refreshToken` is null for `--token`, which supplies only a bearer.
+ * Sign-in returns a refresh token that the EZiL Works API can exchange through
+ * POST /auth/refresh.
  */
 export interface Grant {
 	readonly accessToken: string;
@@ -122,10 +105,8 @@ export interface Grant {
  * of those things. A `connect` that wrote a credentials file after this would
  * be writing a file with nothing in it that works.
  *
- * `reason` is the API's own sentence wherever there is one -- `identity.ts`
- * writes them for a person and this package does not paraphrase them. It never
- * carries the password, the email or any token: it is built from a status and
- * a message, and there is no code path that puts a credential into one.
+ * `reason` preserves the EZiL Works API's user-facing message. It never
+ * carries the password, email or token: it is built from a status and message.
  */
 export class SignInFailed extends Error {
 	readonly status: number | null;
@@ -140,7 +121,7 @@ export class SignInFailed extends Error {
 }
 
 /* ------------------------------------------------------------------------- *
- * Signing in -- `POST /auth/signin`, T8's route
+ * Signing in -- the Works sign-in route POST /auth/signin
  * ------------------------------------------------------------------------- */
 
 /**
@@ -157,10 +138,9 @@ export class SignInFailed extends Error {
  * ## Every failure has its own sentence, and none of them is "wrong password"
  * ## unless it was
  *
- * `identity.ts` writes one message for every way a password grant can fail,
- * deliberately -- a message that distinguished "no such account" from "wrong
- * password" is an account-enumeration oracle. This function keeps that message
- * as-is and adds nothing to it. What it does NOT do is collapse the other four:
+ * The EZiL Works API uses one message for password-grant failures to avoid
+ * revealing whether an account exists. This function preserves that message
+ * and distinguishes these other failures:
  *
  *   - **501 `not_implemented`** -- the deployment has no Supabase publishable
  *     key configured. Nothing about the worker's credentials. Telling them
@@ -223,30 +203,11 @@ export async function signIn(
 /**
  * Ask for an email and a password on a terminal, with the password not echoed.
  *
- * `node:readline/promises` with the output muted for the secret answer, which
- * is what `sudo`, `ssh` and `npm login` all do and for the same reason: a
- * password on the screen is a password in a screenshot, in a scrollback buffer
- * and on the shoulder of whoever is standing there.
- *
- * ## The streams are parameters, and the first version of this was wrong
- *
- * This function was written to mute readline by overriding `_writeToOutput`,
- * which is a Node INTERNAL with no published contract. Taking the streams as
- * arguments is what let `connect.test.ts` drive it over a pair of
- * `PassThrough`s and read back what was actually written -- and the first thing
- * that test did was fail: **measured 2026-09-04 under Bun 1.3.14, the override
- * never fires for keystroke echo.** The bytes written were
- * `["\u001b[1G", "\u001b[0J", "Password: ", "\u001b[11G", "S","E","C","R","E","T", ...]`
- * -- readline in terminal mode echoes each character straight to `output`, and
- * the whole password was on the screen while a comment two lines above claimed
- * it was not. That is the exact failure mode a private API has, and it is why
- * this is a parameter and not a convenience.
- *
- * So the secret path does not use readline at all. It writes the question,
- * turns the terminal's own echo off (`setRawMode`, where there is a terminal to
- * turn it off on -- a pipe does not echo in the first place) and reads bytes
- * until a newline. That is what `ssh` and `sudo` do, and it depends on nothing
- * private: `isTTY` and `setRawMode` are documented `tty.ReadStream` API.
+ * The secret path reads bytes directly with terminal echo disabled through
+ * the documented `isTTY` and `setRawMode` APIs; pipes do not echo. It avoids
+ * readline for passwords because keystroke echo can bypass internal output
+ * overrides. Injectable streams let tests verify the actual output.
+ * The non-secret path uses `node:readline/promises`.
  *
  * Raw mode means this loop owns the keyboard for its duration, so it handles
  * the two keys a person will actually press: backspace deletes a character
@@ -387,7 +348,7 @@ export async function resolveGrant(options: ConnectOptions): Promise<Grant> {
 }
 
 /* ------------------------------------------------------------------------- *
- * The MCP connection -- the same reference `apps/web` derives
+ * The MCP connection -- the same identity reference as the Works web client
  * ------------------------------------------------------------------------- */
 
 /** What `builder_profiles.mcp_provider` records for a connection made this way. */
@@ -398,25 +359,15 @@ export const MCP_PROVIDER = "mcp.ezil.work";
  * THE RULE: the connection's `tokenRef` is the Supabase auth user id.
  * ==========================================================================
  *
- * Not the access token. Not a hash of it. The `sub` the token *carries*, which
- * is already in `accounts.auth_user_id` and is a public identifier.
+ * The reference is the verified auth user's `sub`, already stored as
+ * `accounts.auth_user_id`. It identifies the account without copying the
+ * access token or a hash of that credential.
  *
- * `packages/schema/src/product.sql:203` -- "A reference the secret store
- * resolves -- never the OAuth token itself." `apps/api/src/routes/mcp/
- * identity.ts` already writes exactly this value for the browser-tools
- * connection, in the same words: "already the token's `sub`, and a reference to
- * the identity rather than a copy of the credential."
- *
- * ## This is a second copy of a rule, on purpose
- *
- * `apps/web/src/screens/builder/profile.data.ts` exports the same function
- * under the same name for the same column. The two cannot be one module:
- * `apps/web`'s modules parse `import.meta.env` at load, which `bun test` here
- * cannot provide, and a dependency the other way is the one this package's
- * `redact.ts` header already refuses ("`apps/api` must not depend on
- * `@ezil/cli`"). They are kept honest the way that pair is -- the same named
- * rule, and the same test vector asserted on both sides. See
- * `connect.test.ts`'s `SHARED_SUB`.
+ * The EZiL Works repository keeps a separate copy of this derivation for its
+ * web client. Keeping the copies separate avoids browser-only environment
+ * dependencies in the CLI and a server dependency on `@ezil/cli`.
+ * The same named rule and test vector keep their outputs aligned; see
+ * `connect.test.ts`'s `SHARED_SUB` and `docs/ARCHITECTURE.md`.
  */
 export const MCP_TOKEN_REF_RULE = "supabase-auth-user-id";
 
@@ -431,17 +382,10 @@ export function mcpTokenRefFor(authUserId: string): string {
  * Who the bearer belongs to, according to `GET /v1/me`.
  *
  * ## Why this exists at all
- *
- * A sign-in reports the `sub` on its own answer, so the documented path never
- * needs this. `--token` does: a pasted bearer arrives with nothing attached,
- * and this package does not decode JWTs -- it has no verification key, and a
- * client-side decode is a claim rather than a fact. An earlier draft of this
- * file concluded from that that the `--token` path simply could not record the
- * connection, and said so to the worker. That was wrong: `identity.ts`'s
- * `/v1/me` answers `accountId`, and `apps/api/src/data/accounts.ts` documents
- * that field as "Supabase's `sub`. The same value a verified token carries."
- * So the value IS reachable, from a route that already exists, by asking the
- * server that verified the token instead of trusting the token's own payload.
+ * Sign-in returns the account id directly. A pasted bearer has no attached
+ * identity, so `--token` asks the EZiL Works API through GET /v1/me.
+ * Its `accountId` is the verified Supabase `sub`. The CLI has no verification
+ * key and does not trust a local JWT decode to identify the account.
  *
  * Soft, like its two neighbours: a bearer that `/v1/me` refuses is still worth
  * installing hooks for, and the reason is carried rather than thrown.
@@ -672,11 +616,11 @@ export async function connect(options: ConnectOptions): Promise<ConnectResult> {
 
 	const credentials: StoredCredentials = {
 		accessToken: grant.accessToken,
-		// Real after a sign-in -- `T8` landed `POST /auth/refresh` to exchange it
-		// with -- and null on the `--token` path, where a pasted bearer comes
-		// with nothing attached. `credentials.ts`'s own comment on this field
-		// still says no refresh route exists; that file is not W6's and the
-		// correction is named in its report.
+		// Sign-in supplies a refresh token; `--token` supplies only a bearer.
+		// Store the grant unchanged so a pasted token has a null refresh token.
+		// The EZiL Works API can exchange sign-in refresh tokens at
+		// POST /auth/refresh. The session flush flow does not currently
+		// perform that exchange automatically.
 		refreshToken: grant.refreshToken,
 		apiOrigin: options.apiOrigin,
 		...(contract === null ? {} : { contractPublicId: contract.contractPublicId, repository: contract.repository }),
@@ -690,7 +634,7 @@ export async function connect(options: ConnectOptions): Promise<ConnectResult> {
 	 *
 	 * A sign-in reports the `sub` itself; `--token` does not, so the server that
 	 * verified the bearer is asked (`GET /v1/me`). Either way the value arrives
-	 * from `apps/api` and never from decoding the token here. If it cannot be
+	 * from the EZiL Works API and never from decoding the token here. If it cannot be
 	 * obtained the connection is skipped with the reason said out loud, because
 	 * a builder whose gate is still shut needs to know which of the four things
 	 * `connect` does did not happen.
@@ -723,12 +667,9 @@ export async function connect(options: ConnectOptions): Promise<ConnectResult> {
 /**
  * What connecting says, and it says the second half whether or not anyone asks.
  *
- * §3.3a: "The trail is not silent collection: connecting the browser tools
- * states plainly what is recorded." The same obligation applies here and more
- * so, because these hooks watch an editor rather than a browser task somebody
- * started on purpose. Everything in the "not sent" column is a field the
- * contract has no place for, which is what makes the sentence checkable rather
- * than a promise.
+ * Connecting states plainly what the hooks record, as described in
+ * `docs/ARCHITECTURE.md`. The notice names the collected evidence and excluded
+ * content so the worker can understand what leaves their editor.
  */
 export function connectNotice(result: ConnectResult): string {
 	const lines: string[] = [];

@@ -22,14 +22,11 @@
  * choose event by event what the transcript says. That is a real property and
  * it is why session evidence is worth collecting at all.
  *
- * It still is not independence. The machine is theirs, the toolchain is theirs,
- * and whether the hooks run at all is theirs. `AGENT-WORKS.md` FD-03 names the
- * gap directly: `INDEPENDENT_TEST_PASS` is *"a test that the worker did not
- * write, or a run they did not perform"*, and **the sandbox is the only
- * producer of that rung.** A session transcript showing a green suite is a
- * worker's claim that their machine went green — the adjacent rung, and the
- * exact QA collapse this product exists to catch. So nothing derived from this
- * contract may ever be recorded above `WORKER_RUNTIME_EVIDENCE`.
+ * The machine, toolchain and hook installation remain under the worker's
+ * control. Only the independent sandbox produces `INDEPENDENT_TEST_PASS`.
+ * A green session transcript is a worker-runtime claim, so nothing derived
+ * from this contract may be recorded above `WORKER_RUNTIME_EVIDENCE`.
+ * See `docs/ARCHITECTURE.md` for the evidence limits.
  *
  * ## No file contents. Anywhere.
  *
@@ -43,18 +40,14 @@
  * bounded and redacted; it exists so a failure has a readable symptom, not so a
  * reader can reconstruct a file.
  *
- * The same rule reaches prompts, which is why `prompt` carries a digest and a
- * redacted summary and no `verbatim` field. **Verbatim prompt capture is a
- * founder decision that has not been taken, and it is not in this contract.**
- * LB-7's second half — *"no default invasive surveillance"* — is untouched by
- * FD-01, and a prompt log is the most invasive thing this pipeline could
- * collect. Every schema below is strict, so a producer that adds `verbatim`
- * anyway is refused by name rather than quietly stored.
+ * Prompts carry a digest and a redacted summary, never verbatim text.
+ * Strict schemas reject any added `verbatim` field so the API enforces this
+ * privacy boundary even when a producer attempts to send the full prompt.
  */
 
 import { z } from "zod";
 
-/** The Works ladder rung this evidence reaches (`packages/contracts/src/ladder.ts` in EZiL-Works). */
+/** The evidence ladder rung defined by the EZiL Works API. See docs/ARCHITECTURE.md. */
 type DoneRung = "WORKER_RUNTIME_EVIDENCE";
 
 /**
@@ -91,11 +84,8 @@ export const SessionEventKindSchema = z.enum(SESSION_EVENT_KINDS);
 /**
  * A full git object id, exactly 40 lowercase hex characters.
  *
- * Deliberately **narrower** than `GitObjectIdSchema` in `orchestration.ts`,
- * which accepts 7 to 64. That one is written for ids a person may have typed or
- * abbreviated; this one is written by `git rev-parse HEAD` inside a hook, which
- * has no reason to be short. Accepting an abbreviation here would let two
- * sessions report prefixes that cannot be compared to each other or joined to a
+ * Hooks report full ids from `git rev-parse HEAD`, so abbreviations are not
+ * accepted. Prefixes cannot be compared across sessions or joined to a
  * contract's `base_commit` without a repository to resolve them against.
  */
 const HeadShaSchema = z
@@ -142,7 +132,7 @@ const eventCommon = {
 	 * and without a command**, and that is enforced below rather than left to
 	 * the producer. Outside the repository is the worker's own machine and the
 	 * worker's own life; a path there is surveillance of a person rather than
-	 * evidence about work, which is the half of LB-7 FD-01 does not touch.
+	 * evidence about work. The contract enforces this privacy boundary.
 	 */
 	outsideRepository: z.boolean().default(false),
 };
@@ -173,9 +163,8 @@ const PromptEventSchema = z.strictObject({
 	digestSha256: PromptDigestSchema,
 	summary: SummarySchema,
 	/*
-	 * There is no `verbatim` field, and `strictObject` is what makes that a
-	 * refusal rather than a preference. See this file's header: verbatim prompt
-	 * capture is a founder decision that has not been taken.
+	 * There is no `verbatim` field. `strictObject` rejects it to enforce the
+	 * prompt privacy boundary described in this file's header.
 	 */
 });
 
@@ -256,9 +245,8 @@ const SessionEndSchema = z.strictObject({
  * A discriminated union rather than one object with every field optional, so
  * that a `post_tool` missing its `exitCode` is refused as a bad `post_tool`
  * instead of parsing as an event that happens to say very little. Every member
- * is strict: an unknown key is a producer sending something this contract did
- * not agree to receive, and silently dropping it is how a `verbatim` field
- * arrives in production without a decision having been taken.
+ * is strict: silently dropping an unknown key could hide a producer sending
+ * prohibited content such as a `verbatim` prompt.
  */
 export const SessionEventSchema = z
 	.discriminatedUnion("kind", [
@@ -297,12 +285,9 @@ export type SessionEvent = z.infer<typeof SessionEventSchema>;
 /**
  * A session id, as a path-safe token.
  *
- * It appears in a URL path segment (`/v1/sessions/:sessionId/events`) and in the
- * storage key of every segment derived from it, so the same rule
- * `orchestration.ts` states for a run id applies for the same reason: a value
- * that cannot be a path segment cannot be either of the two things this id is
- * used as. It is minted by the hook rather than by Works, so its format is
- * constrained and not invented here.
+ * It appears in a URL path segment (`/v1/sessions/:sessionId/events`) and in
+ * every segment's storage key. Hooks mint the id, so the contract constrains
+ * its format to values safe for both uses.
  */
 const SessionIdSchema = z
 	.string()

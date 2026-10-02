@@ -201,10 +201,11 @@ it("rate-limits by grant when the binding exists", async () => {
 	expect(h.api).toHaveLength(0);
 });
 
-describe("downloads (installers and release files)", () => {
-	const releases = (objects: Record<string, string>) => ({ get: async (key: string) => key in objects
-		? { body: new Response(objects[key]).body!, size: new TextEncoder().encode(objects[key]).length, httpEtag: `"${key}"` } : null });
-	const get = (path: string, over: Partial<GatewayEnv> = {}) => handle(new Request(`https://github.ezil.work${path}`), { ...env, ...over }, harness().deps);
+describe("downloads (installers and release redirects)", () => {
+	const get = (path: string, fetcher?: GatewayDeps["fetch"], over: Partial<GatewayEnv> = {}) => {
+		const deps = harness().deps;
+		return handle(new Request(`https://github.ezil.work${path}`), { ...env, ...over }, fetcher ? { ...deps, fetch: fetcher } : deps);
+	};
 	it("serves both installers without credentials or an API call", async () => {
 		for (const [path, marker] of [["/install.sh", "#!/bin/sh"], ["/install.ps1", "irm https://github.ezil.work/install.ps1"]] as const) {
 			const response = await get(path);
@@ -212,22 +213,24 @@ describe("downloads (installers and release files)", () => {
 			expect(await response.text()).toContain(marker);
 		}
 	});
-	it("streams only versioned release files and SHA256SUMS from R2, with honest headers", async () => {
-		const RELEASES = releases({ "cli/latest": "0.1.0", "cli/0.1.0/ezil-0.1.0-linux-x64": "ELF", "cli/0.1.0/SHA256SUMS": "abc  ezil-0.1.0-linux-x64\n", "secret/x": "no" });
-		expect(await (await get("/cli/latest", { RELEASES })).text()).toBe("0.1.0");
-		const binary = await get("/cli/0.1.0/ezil-0.1.0-linux-x64", { RELEASES });
-		expect(binary.status).toBe(200);
-		expect(binary.headers.get("content-type")).toBe("application/octet-stream");
-		expect(binary.headers.get("content-length")).toBe("3");
-		expect(binary.headers.get("cache-control")).toContain("immutable");
-		expect((await get("/cli/0.1.0/SHA256SUMS", { RELEASES })).headers.get("content-type")).toContain("text/plain");
-		for (const path of ["/cli/0.1.0/ezil-0.2.0-linux-x64", "/cli/0.1.0/../../secret/x", "/cli/0.1.0/ezil-0.1.0-plan9-x64", "/cli/x/SHA256SUMS", "/secret/x", "/cli/0.1.0/"])
-			expect((await get(path, { RELEASES })).status).toBe(404);
-		expect((await get("/cli/0.9.9/SHA256SUMS", { RELEASES })).status).toBe(404); // a shape-valid name that was never released
+	it("answers the latest version from the release page's redirect, and 503 when it cannot", async () => {
+		const asked: string[] = [];
+		const github: GatewayDeps["fetch"] = async (input) => { asked.push(String(input));
+			return new Response(null, { status: 302, headers: { location: "https://github.com/EZiLHQ/ezil-cli/releases/tag/v0.1.0" } }); };
+		const latest = await get("/cli/latest", github);
+		expect(await latest.text()).toBe("0.1.0");
+		expect(asked).toEqual(["https://github.com/EZiLHQ/ezil-cli/releases/latest"]);
+		const odd: GatewayDeps["fetch"] = async () => new Response(null, { status: 302, headers: { location: "https://github.com/EZiLHQ/ezil-cli/releases/tag/nightly; rm -rf" } });
+		expect((await get("/cli/latest", odd)).status).toBe(503);
+		const down: GatewayDeps["fetch"] = async () => { throw new Error("offline"); };
+		expect((await get("/cli/latest", down)).status).toBe(503);
 	});
-	it("says downloads are unavailable rather than 404 when the bucket is not bound", async () => {
-		expect((await get("/cli/latest")).status).toBe(503);
-		expect((await get("/install.sh")).status).toBe(200);
+	it("redirects only versioned release files and SHA256SUMS to that release", async () => {
+		const binary = await get("/cli/0.1.0/ezil-0.1.0-linux-x64");
+		expect(binary.status).toBe(302);
+		expect(binary.headers.get("location")).toBe("https://github.com/EZiLHQ/ezil-cli/releases/download/v0.1.0/ezil-0.1.0-linux-x64");
+		expect((await get("/cli/0.1.0/SHA256SUMS", undefined, { RELEASES_ORIGIN: "http://127.0.0.1:9/r/" })).headers.get("location")).toBe("http://127.0.0.1:9/r/download/v0.1.0/SHA256SUMS");
+		for (const path of ["/cli/0.1.0/ezil-0.2.0-linux-x64", "/cli/0.1.0/../../x", "/cli/0.1.0/ezil-0.1.0-plan9-x64", "/cli/x/SHA256SUMS", "/cli/0.1.0/"])
+			expect((await get(path)).status).toBe(404);
 	});
 });
-

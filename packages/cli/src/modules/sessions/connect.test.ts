@@ -79,10 +79,10 @@ describe("connect", () => {
 		expect(stored?.apiOrigin).toBe("https://api.ezil.work");
 		expect(stored?.contractPublicId).toBe(CONTRACT);
 		expect(stored?.repository).toBe("ezil/works");
-		// Absent, and visibly so: a PASTED bearer comes with nothing attached.
-		// `T8` landed `POST /auth/refresh`, so the sign-in path below does store
-		// one -- this branch is `--token`, where nothing ever handed this
-		// process a refresh token to keep.
+		// A pasted bearer includes no refresh token.
+		// The sign-in path stores the refresh token returned by the API.
+		// This branch uses `--token`, so the stored field must remain null
+		// rather than inventing a credential the process never received.
 		expect(stored?.refreshToken).toBeNull();
 
 		// The mode is read off the file, not off the call that wrote it.
@@ -191,25 +191,15 @@ describe("connectNotice", () => {
 });
 
 /* ------------------------------------------------------------------------- *
- * `ezil connect` signs in — docs/TASKS.csv W6
+ * `ezil connect` signs in
  * ------------------------------------------------------------------------- */
 
 /**
- * ==========================================================================
- * THE SHARED VECTOR. The identical three lines are in
- * `apps/web/src/screens/builder/profile.test.ts`, asserted against that
- * package's own `mcpTokenRefFor`.
- * ==========================================================================
- *
- * `@ezil/cli` and `apps/web` share no module and must not: `apps/web`'s modules
- * parse `import.meta.env` at load, which `bun test` here cannot provide, and a
- * dependency the other way is the one `redact.ts`'s header already refuses for
- * the api/cli pattern lists. The two derivations of the connection's `tokenRef`
- * are therefore kept honest the way that pair is — the same named rule
- * (`MCP_TOKEN_REF_RULE`), and this vector asserted on both sides.
- *
- * If someone changes one derivation, the vector on the other side is what
- * disagrees.
+ * The EZiL Works repository tests its own `mcpTokenRefFor` against these
+ * same vectors. The CLI and web client keep separate implementations to
+ * avoid browser environment dependencies and a server dependency on the CLI.
+ * The named rule (`MCP_TOKEN_REF_RULE`) and shared vectors keep both
+ * derivations of the connection's `tokenRef` aligned.
  */
 const SHARED_SUB = "6f1c9e2a-4b8d-4a71-9f30-2c5e7d81b4aa";
 const SHARED_REFERENCE = "6f1c9e2a-4b8d-4a71-9f30-2c5e7d81b4aa";
@@ -333,7 +323,7 @@ describe("connect signs in with an email and a password", () => {
 
 		const stored = readCredentials(environment);
 		expect(stored?.accessToken).toBe(SHARED_BEARER);
-		// T8 landed /auth/refresh, so there is now something to keep this for.
+		// Preserve the refresh token returned by the Works sign-in route.
 		expect(stored?.refreshToken).toBe(REFRESH_SENTINEL);
 		expect(credentialsMode(environment)).toBe(0o600);
 
@@ -512,15 +502,9 @@ describe("the reference the connection is recorded against", () => {
 	});
 
 	/**
-	 * The `--token` path asks the server who the bearer is rather than decoding
-	 * it, and rather than giving up.
-	 *
-	 * An earlier draft concluded a pasted bearer could never be connected,
-	 * because this package does not decode JWTs. `GET /v1/me` answers
-	 * `accountId`, which `apps/api/src/data/accounts.ts` documents as
-	 * "Supabase's `sub`. The same value a verified token carries" -- so the
-	 * value is reachable from the server that verified the token, which is a
-	 * stronger source than the token's own payload anyway.
+	 * The `--token` path asks the EZiL Works API for the bearer owner's identity
+	 * through GET /v1/me. Its `accountId` is the verified Supabase `sub`, so the
+	 * connection uses the server's verified identity without decoding the JWT.
 	 */
 	it("asks /v1/me for the reference on the --token path rather than decoding the bearer", async () => {
 		const { call, calls } = signedInServer({
@@ -626,8 +610,8 @@ describe("nothing this command prints is a secret", () => {
 		const result = await connect({ apiOrigin: "https://api.ezil.work", projectRoot: root, fetch: call, environment, ask });
 		const notice = connectNotice(result);
 
-		// The three things a connect notice must never carry. Before W6 only the
-		// first existed; a sign-in introduced the other two.
+		// A connect notice must never carry the bearer, refresh token or password.
+		// Check all three credentials returned or consumed by sign-in.
 		expect(notice).not.toContain(SHARED_BEARER);
 		expect(notice).not.toContain(REFRESH_SENTINEL);
 		expect(notice).not.toContain(PASSWORD_SENTINEL);
@@ -721,28 +705,16 @@ describe("terminalPrompt keeps the password off the screen", () => {
 });
 
 /* ------------------------------------------------------------------------- *
- * The command, not the library — docs/TASKS.csv W6
+ * The command, not the library
  * ------------------------------------------------------------------------- */
 
 /**
- * `bin/ezil.ts` is the whole user interface, and until W6 widened its
- * ownership it was where this row's headline died.
+ * Run the real binary against a local HTTP server to verify that command
+ * dispatch reaches sign-in without a pre-existing bearer. Library tests alone
+ * cannot prove that the command exposes the same behavior.
  *
- * ## Why this one spawns a process
- *
- * Every other test in this file drives `connect()`, and `connect()` had signed
- * in for some time before `ezil connect` could. The bin refused first: it read
- * `--token` / `EZIL_ACCESS_TOKEN`, and with neither present it wrote "the API
- * has no sign-in route" to stderr and returned 2 — **without ever calling
- * `connect()`**. A library that can sign in, behind a command that will not let
- * it, is not a feature anybody has; and no test in this package could see the
- * gap, because none of them ran the command.
- *
- * So this one runs the real binary, in a real subprocess, with a real HTTP
- * server on a real port, and reads its real exit code and stdout. `bin/ezil.ts`
- * ends in `process.exitCode = await main()` at the top level — importing it
- * would run it — so a subprocess is not a stylistic preference here, it is the
- * only way in.
+ * `bin/ezil.ts` executes `main()` at import time, so a subprocess exercises
+ * the entry point and captures its exit code, stdout and stderr.
  *
  * The environment is built from nothing rather than spread from `process.env`,
  * so a developer with `EZIL_ACCESS_TOKEN` exported in their shell cannot make
@@ -848,13 +820,13 @@ describe("`ezil connect` reaches the sign-in from a shell", () => {
 			expect(stdout).toContain("with your email and password");
 			expect(stdout).toContain("mcp.ezil.work recorded against your account");
 
-			// The sentence the old early exit printed asserted something about the
-			// product that stopped being true when T8 landed /auth/signin.
+			// The command must not claim that the Works sign-in route is absent.
+			// Its output must reflect the successful POST /auth/signin request.
 			expect(stderr).not.toContain("has no sign-in route");
 
-			// Nothing secret on either stream. This is the stdout scan the brief
-			// asks for, against the actual process output rather than a string a
-			// function returned.
+			// No credential may appear on either process output stream.
+			// Scan actual stdout and stderr to cover the command entry point
+			// as well as the library's returned notice.
 			for (const stream of [stdout, stderr]) {
 				expect(stream).not.toContain(SHARED_BEARER);
 				expect(stream).not.toContain(REFRESH_SENTINEL);

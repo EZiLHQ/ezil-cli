@@ -19,37 +19,22 @@ import { credentialsPath, ezilHome } from "./paths";
  * credential written there is one `git add -A` away from being in somebody
  * else's repository forever. The two roots are why `paths.ts` has two roots.
  *
- * ## The keychain is a follow-up, and this says so
+ * ## File storage protection
  *
- * A 0600 file is the same protection `~/.aws/credentials`, `~/.npmrc` and
- * `gh`'s own hosts file give, and it is worth less than the operating system's
- * keychain: any process running as this user can read it. Storing it in the
- * macOS Keychain / libsecret / Credential Manager is the right end state and is
- * not this task's. `connect` says so out loud when it writes the file, because
- * a limitation the user is not told about is one they cannot decide about.
+ * Mode 0600 restricts access to the current user, but any process running as
+ * that user can read the file. These session-hook credentials use file storage;
+ * `connect` reports that limitation when it writes them.
  */
 
 export interface StoredCredentials {
 	readonly accessToken: string;
 	/**
-	 * Real after a sign-in, and `null` after `--token`.
+	 * Supplied by the Works sign-in route POST /auth/signin; null after `--token`.
+	 * A pasted bearer includes no refresh token, so expiration requires running
+	 * `ezil connect` again.
 	 *
-	 * This comment used to say the field was "absent, and the field exists so
-	 * that it is visibly absent", because `apps/api/src/routes/identity.ts`
-	 * served no sign-in or refresh route at all and there was nothing to
-	 * exchange a refresh token with. **`docs/TASKS.csv` T8 landed
-	 * `POST /auth/refresh`**, and W6's `connect` signs in through
-	 * `POST /auth/signin`, which answers a refresh token -- so the field now
-	 * holds one whenever the session was obtained that way.
-	 *
-	 * `null` is still a real and ordinary value: the `--token` escape hatch
-	 * takes a bearer somebody pasted, and a pasted bearer arrives with nothing
-	 * attached to refresh it with. Recovery from an expired token on that path
-	 * is `ezil connect` again; `flush.ts` says so where it hits a 401.
-	 *
-	 * Nothing in this package spends the refresh token yet -- storing it is
-	 * what makes an automatic re-auth possible later, and doing that re-auth is
-	 * a change to `flush.ts`, which W6 does not own.
+	 * The EZiL Works API supports POST /auth/refresh, but the session flush flow
+	 * stores this token without automatically exchanging it.
 	 */
 	readonly refreshToken: string | null;
 	readonly apiOrigin: string;

@@ -15,8 +15,8 @@ VERSION="$version" bun -e '
 const pkg = {
   name: "@ezilhq/cli", version: process.env.VERSION,
   description: "EZiL command line: sign in, clone and push EZiL repositories with plain git (github.ezil.work), session evidence for EZiL Works.",
-  type: "module", bin: { ezil: "dist/ezil.js" }, files: ["dist", "README.md", "LICENSE"],
-  engines: { node: ">=18" }, license: "UNLICENSED",
+  type: "module", bin: { ezil: "dist/ezil.js" }, files: ["dist/ezil.js", "README.md", "LICENSE"],
+  engines: { node: ">=22" }, license: "Apache-2.0",
   repository: { type: "git", url: "git+https://github.com/EZiLHQ/ezil-cli.git" },
   homepage: "https://github.com/EZiLHQ/ezil-cli#readme", bugs: "https://github.com/EZiLHQ/ezil-cli/issues",
   keywords: ["ezil", "git", "credential-helper", "cli"], publishConfig: { access: "public" },

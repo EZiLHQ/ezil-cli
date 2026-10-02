@@ -2,6 +2,12 @@
 	"name": "@ezil/cli-tests",
 	"private": true,
 	"type": "module",
-	"dependencies": { "@ezil/cli-contract": "workspace:*", "@ezil/git-gateway": "workspace:*" },
-	"scripts": { "typecheck": "tsc --noEmit -p tsconfig.json" }
+	"dependencies": {
+		"@ezil/cli-contract": "workspace:*",
+		"@ezil/git-gateway": "workspace:*"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit -p tsconfig.json"
+	},
+	"license": "Apache-2.0"
 }

@@ -8,10 +8,10 @@ import * as sessionEvidence from "./session-evidence";
 /**
  * The pinned wire contract between the EZiL CLI (and its github.ezil.work gateway) and the EZiL Works API.
  *
- * EZiL Works pins the same three values. A failure here means this copy changed: make the identical change in
- * EZiL-Works `packages/contracts/src/surface/` (same file, same zod version), then update the constant in both
- * repositories in the same change window. The zod version is part of the digest on purpose: two zod releases
- * validate `iso.datetime()` differently, and that is a wire difference.
+ * The EZiL Works repository pins the same three values. A failure means this copy changed:
+ * make the identical change in that repository using the same zod version, then update both
+ * constants in the same change window. Zod versions can validate `iso.datetime()` differently,
+ * so the version affects wire compatibility.
  *
  * What this does NOT do: compare the two repositories. Each side checks only its own copy against its own constant,
  * so a change re-pinned on one side alone passes here. Cross-repository compatibility is proven at runtime instead:

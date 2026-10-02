@@ -1,12 +1,12 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
-// The pinned wire shape, reached by relative path rather than by the package
-// specifier `@ezil/contracts`. `packages/orchestration/src/session.ts` does the
-// same thing and for the same reason: a workspace package that has not been
-// installed has no `node_modules/@ezil/contracts` to resolve, and the whole
-// suite's typecheck stage runs before anybody installs anything. The dependency
-// is declared in `package.json` so a published build resolves it properly.
+// Import the pinned session-event wire shape from the contract package.
+// This type keeps spooled events aligned with the EZiL Works API.
+// The EZiL Works repository keeps its own copy of the contract.
+// Both repositories pin contract digests to detect local changes.
+// The dependency is declared in `package.json` for published builds.
+// See docs/ARCHITECTURE.md for the evidence pipeline.
 import type { SessionEvent } from "@ezil/cli-contract/session-evidence";
 
 import { cursorPath, spoolPath } from "../../core/paths";
@@ -67,10 +67,9 @@ export interface SpoolCursor {
 	 * cursor advances by exactly what landed, and the later events go out as the
 	 * next sequence.
 	 *
-	 * The alternative -- putting a content digest in the route's id salt -- was
-	 * rejected: it turns this loss into the same events stored TWICE under two
-	 * ids a verdict could cite interchangeably, which `dispatch/derived-uuid.ts`
-	 * exists to prevent.
+	 * Stable segment ids let the EZiL Works API deduplicate retries. Adding a
+	 * content digest to the id would let different batch sizes store the same
+	 * events twice under different ids, duplicating evidence.
 	 */
 	readonly pending: number;
 }

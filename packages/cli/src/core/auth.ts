@@ -59,11 +59,16 @@ export async function login(io: Io, setup: readonly SetupStep[] = []): Promise<n
 export async function logout(io: Io): Promise<number> {
 	const origin = apiOriginOf(io.env);
 	const store = storeFor(io);
+	const present = store.read(origin) !== null;
 	const live = await accessToken(io).catch(() => null);
-	if (live) await api(io, origin, "/cli/logout", { method: "POST", token: live.token, body: {} }).catch(() => undefined);
+	// Revoke on the server first; the local copy is removed either way, and the person is told which happened.
+	const revoked = live ? await api(io, origin, "/cli/logout", { method: "POST", token: live.token, body: {} }).then(() => true, () => false) : false;
 	store.remove(origin);
-	io.out("Signed out on this device.");
-	return 0;
+	if (!present) { io.out("Not signed in on this device."); return 0; }
+	if (revoked) { io.out("Signed out: this device's session is revoked."); return 0; }
+	io.err("Removed the sign-in from this device, but EZiL could not be reached to revoke the session.");
+	io.err("Revoke it from another signed-in device with `ezil auth sessions revoke <id>`, or it expires on its own.");
+	return 1;
 }
 
 interface Whoami { account: { email: string; role: string }; session: { id: string; device: string; expiresAt: string };

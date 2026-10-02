@@ -5,9 +5,9 @@ import { z } from "zod";
  * A canonical digest of a contract module: every export, by name, in a stable rendering.
  *
  * Zod schemas render as JSON Schema (input and output), regular expressions as source and flags, functions as whitespace-normalised
- * source, everything else as JSON. The EZiL CLI and EZiL Works each keep a copy of these contract files and pin the
- * same digests (`digest.test.ts` here, `packages/contracts/src/cli-contract-digest.test.ts` in Works), so a
- * change to a copy fails that repository's test until its constant is updated (see the test for what that does not prove).
+ * source, everything else as JSON. The EZiL Works repository keeps a copy of these contract files
+ * and pins the same digests as `digest.test.ts` here. Changing either copy fails its local test
+ * until the constant is updated (see the test for what that does not prove).
  */
 export function contractDigest(module: Record<string, unknown>): string {
 	const render = (value: unknown): unknown => {

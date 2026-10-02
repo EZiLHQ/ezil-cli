@@ -7,18 +7,14 @@ import { excerptOf, redact } from "../../core/redact";
 /**
  * Hook JSON in, one {@link SessionEvent} out.
  *
- * Pure, and deliberately so: everything that touches git, the clock or the disk
- * is `hook.ts`'s and arrives here as {@link EventContext}. A decision that needs
- * a working tree to test is a decision whose interesting cases nobody builds a
- * tree for -- the argument `packages/orchestration/src/factpack.ts` makes, and
- * the reason the hard cases below (a tool acting outside the repository, a
- * missing exit code, an 8 KB excerpt) are unit-testable at all.
+ * Pure: git, clock and disk access belong to `hook.ts` and arrive here as
+ * {@link EventContext}. This makes outside-repository tools, missing exit
+ * codes and bounded excerpts testable without constructing a working tree.
  *
  * ## What is built, and what is refused to be built
  *
- * `docs/ARCHITECTURE.md` §3.3 lists `full prompts` and `raw source by default`
- * as never collected, and §3.3a's amendment moves the browser trail and
- * explicitly does not move those. So:
+ * See `docs/ARCHITECTURE.md` for the collection boundaries: full prompts
+ * and raw source are not collected by default.
  *
  *   - a prompt becomes a **digest** and a redacted opening of at most 512
  *     characters. There is no `verbatim` field on the contract and none is
@@ -182,16 +178,12 @@ export function summaryOf(prompt: string, limit = 512): string {
  * harness that simply does not report a status is a third case the contract has
  * no spelling for. `null` is used for it anyway, and the direction that choice
  * fails in is what makes it the right one:
- * `packages/orchestration/src/session.ts` reads a green test claim as a
- * `pre_tool` whose command looks like a test runner followed by a `post_tool`
- * with `exitCode === 0`. A `0` invented for "the tool call did not error" would
- * MANUFACTURE a green claim out of a suite that went red -- FD-03's QA collapse,
- * produced by the evidence pipeline itself. `null` produces no claim at all,
- * which under-counts, and an under-count is the direction this whole pipeline
- * is designed to fail in.
+ * EZiL's evidence cross-check treats a test-runner `pre_tool` followed by a
+ * `post_tool` with `exitCode === 0` as a green test claim. Inventing zero when
+ * no exit status was reported could turn a failed suite into a passing claim.
+ * `null` produces no claim, preserving the evidence limit.
  *
- * A hand-off is owed to whoever owns the contract: "not reported" and "killed"
- * deserve different spellings, and today they do not have them.
+ * The contract uses null for both killed processes and unreported statuses.
  */
 export function exitCodeIn(toolResponse: HookInput | undefined): number | null {
 	if (toolResponse === undefined) return null;
@@ -279,8 +271,8 @@ export function eventFor(kind: HookKind, input: HookInput, context: EventContext
 				at: context.at,
 				outsideRepository: where.outsideRepository,
 				tool,
-				// Both dropped when outside. The contract refuses them there, and
-				// refusing them there is the whole of LB-7's second half.
+				// Drop paths and commands outside the repository; the contract also
+				// refuses them to keep personal activity out of work evidence.
 				...(where.outsideRepository || command === undefined
 					? {}
 					: { command: redact(command).slice(0, 2048) }),

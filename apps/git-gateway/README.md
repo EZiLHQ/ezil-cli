@@ -1,7 +1,7 @@
 # git-gateway: github.ezil.work
 
-A thin Git smart-HTTP gateway in front of Cloudflare Artifacts (EZiL CLI plan, section C).
-It has no UI and no repository pages; decision D0 keeps it an internal detail.
+A thin Git smart-HTTP gateway in front of Cloudflare Artifacts. See [docs/ARCHITECTURE.md](../../docs/ARCHITECTURE.md).
+It has no UI or repository pages; it handles Git transport and authorization.
 
 ```
 git ──Basic(ezil:egg_…)──► gateway ──HMAC──► Works API /internal/git/authorize
@@ -14,7 +14,7 @@ git ──Basic(ezil:egg_…)──► gateway ──HMAC──► Works API /in
 - **Credentials.** The client sends an EZiL git grant (`egg_…`, ≤15 min, one repository) from
   `ezil git-credential`. Bearer tokens are refused. A request without credentials gets
   401 + `WWW-Authenticate: Basic`, which is what makes Git call the helper.
-- **Authorization.** Every operation is authorized by the API, which fails closed (503) if the API is
+- **Authorization.** Every operation is authorized by the EZiL Works API. The gateway fails closed (503) if the API is
   unreachable or answers anything unexpected. Read (fetch/clone) decisions are cached per isolate for at most 5 s. Pushes and denials are
   never cached, so revoking a session or closing a task stops the next push at once.
 - **Artifacts tokens.** The token is minted per Git service: read for upload-pack, write for receive-pack.
@@ -28,7 +28,7 @@ git ──Basic(ezil:egg_…)──► gateway ──HMAC──► Works API /in
 ## Environment
 | Name | Kind | Notes |
 |---|---|---|
-| `API_ORIGIN` | var | Works API origin |
+| `API_ORIGIN` | var | EZiL Works API origin |
 | `GIT_GATEWAY_SECRET` | secret | Same value as the API's `GIT_GATEWAY_SECRET`; distinct from every other channel secret |
 | `IP_HASH_SALT` | secret | The client IP leaves the edge only as `sha256(salt:ip)` |
 | `RL` | rate-limit binding (in `wrangler.jsonc`) | 120/min per grant and per IP hash |

@@ -57,3 +57,18 @@ it("logs out on the server and forgets the session locally", async () => {
 	expect(h.calls.map(c => c.path)).toEqual(["/cli/logout"]);
 	expect(store.value).toBeNull();
 });
+
+it("says so, and exits 1, when the local sign-in is removed but the server could not revoke it", async () => {
+	const store = memoryStore(session());
+	const h = io(() => { throw new TypeError("network down"); }, store);
+	expect(await logout(h.io)).toBe(1);
+	expect(store.value).toBeNull();
+	expect(h.err.join("\n")).toContain("could not be reached to revoke");
+	expect(h.out).toEqual([]);
+});
+
+it("reports a logout with nothing signed in as such", async () => {
+	const h = io(() => { throw new Error("must not call"); });
+	expect(await logout(h.io)).toBe(0);
+	expect(h.out).toEqual(["Not signed in on this device."]);
+});

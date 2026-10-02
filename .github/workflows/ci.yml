@@ -22,22 +22,32 @@ env:
 
 jobs:
   check:
-    if: >-
-      github.event_name != 'pull_request' ||
-      (!github.event.pull_request.draft &&
-       github.event.pull_request.head.repo.full_name == github.repository)
+    # Forks included: this job runs on a GitHub-hosted runner with a read-only token and no secrets.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
       - name: Typecheck and test (unit, gateway, full-chain e2e, install)
         run: bun run typecheck && env -i PATH="$PATH" HOME="$HOME" CI=true bun run test
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: The npm package installs and runs under Node 22 (the engines floor)
+        run: |
+          set -euo pipefail
+          version="$(bun -e 'console.log(require("./packages/cli/package.json").version)')"
+          bash .github/scripts/build-npm.sh "$version" "$RUNNER_TEMP/npm"
+          (cd "$RUNNER_TEMP/npm" && npm pack --silent >/dev/null)
+          npm install -g --prefix "$RUNNER_TEMP/prefix" "$RUNNER_TEMP/npm/ezilhq-cli-$version.tgz" --silent
+          "$RUNNER_TEMP/prefix/bin/ezil" 2>&1 | grep -q "ezil auth login"
+          echo "@ezilhq/cli $version runs under $(node --version)"
 
   staging:
     needs: check
@@ -49,15 +59,15 @@ jobs:
       group: ezil-cli-staging
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
       # wrangler must run under Node: under the Bun runtime `wrangler deploy` printed its banner and exited 0
       # without deploying (secret put still worked), which only the health probe caught.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
       - run: bun install --frozen-lockfile
@@ -82,6 +92,7 @@ jobs:
       - name: Live E2E against real Works API and Artifacts
         env:
           EZIL_LIVE_GATEWAY: git-staging.ezil.work
+          EZIL_E2E_QA_EMAIL: ${{ vars.EZIL_E2E_QA_EMAIL }}
           EZIL_E2E_QA_PASSWORD: ${{ secrets.EZIL_E2E_QA_PASSWORD }}
         run: bun tests/live/live.ts
 
@@ -95,15 +106,15 @@ jobs:
       group: ezil-cli-production
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
       # wrangler must run under Node: under the Bun runtime `wrangler deploy` printed its banner and exited 0
       # without deploying (secret put still worked), which only the health probe caught.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
       - run: bun install --frozen-lockfile
@@ -139,6 +150,7 @@ jobs:
       - name: Live smoke against production
         env:
           EZIL_LIVE_GATEWAY: github.ezil.work
+          EZIL_E2E_QA_EMAIL: ${{ vars.EZIL_E2E_QA_EMAIL }}
           EZIL_E2E_QA_PASSWORD: ${{ secrets.EZIL_E2E_QA_PASSWORD }}
         run: bun tests/live/live.ts
       # Only after this job's deploy succeeded and a later step (secrets, probe, smoke) failed, and only to the exact
@@ -164,52 +176,58 @@ jobs:
       contents: write
       id-token: write # npm provenance
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: ${{ env.BUN_VERSION }}
       - run: bun install --frozen-lockfile
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
       - name: Build standalone binaries
         run: bash .github/scripts/build-binaries.sh "${GITHUB_REF_NAME#v}" dist
-      - name: Publish to github.ezil.work downloads (R2 ezil-cli-releases), then move cli/latest
-        working-directory: apps/git-gateway
+      - name: Publish the GitHub release (binaries + SHA256SUMS; notes from CHANGELOG.md)
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
-          put() { ./node_modules/.bin/wrangler r2 object put "ezil-cli-releases/$1" --file "$2" --content-type "$3" --remote; }
-          for f in ../../dist/ezil-*; do put "cli/$version/$(basename "$f")" "$f" application/octet-stream; done
-          put "cli/$version/SHA256SUMS" ../../dist/SHA256SUMS "text/plain; charset=utf-8"
-          printf %s "$version" > "$RUNNER_TEMP/latest"
-          put cli/latest "$RUNNER_TEMP/latest" "text/plain; charset=utf-8"
+          awk -v v="$version" '$0 ~ "^## \\[" v "\\]" {on=1; next} /^## \[/ {on=0} on' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          test -s "$RUNNER_TEMP/notes.md" || { echo "::error::CHANGELOG.md has no section for $version"; exit 1; }
+          printf '\nInstall: `npm install -g @ezilhq/cli`, or `curl -fsSL https://github.ezil.work/install.sh | sh` (macOS, Linux), or `irm https://github.ezil.work/install.ps1 | iex` (Windows). Binaries are unsigned; verify them with SHA256SUMS.\n' >> "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "EZiL CLI $GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" --verify-tag
       - name: Install from the live URL and run the live E2E with the installed binary
         env:
+          EZIL_E2E_QA_EMAIL: ${{ vars.EZIL_E2E_QA_EMAIL }}
           EZIL_E2E_QA_PASSWORD: ${{ secrets.EZIL_E2E_QA_PASSWORD }}
         run: |
           set -euo pipefail
-          export EZIL_INSTALL_DIR="$RUNNER_TEMP/ezil-bin" EZIL_VERSION="${GITHUB_REF_NAME#v}"
+          version="${GITHUB_REF_NAME#v}"
+          for _ in $(seq 1 20); do [ "$(curl -fsSL https://github.ezil.work/cli/latest || true)" = "$version" ] && break; sleep 6; done
+          [ "$(curl -fsSL https://github.ezil.work/cli/latest)" = "$version" ] || { echo "::error::github.ezil.work/cli/latest does not report $version"; exit 1; }
+          export EZIL_INSTALL_DIR="$RUNNER_TEMP/ezil-bin"
           curl -fsSL https://github.ezil.work/install.sh | sh
+          test "$("$EZIL_INSTALL_DIR/ezil" --version)" = "ezil $version"
           EZIL_LIVE_GATEWAY=github.ezil.work EZIL_CLI_BIN="$EZIL_INSTALL_DIR/ezil" bun tests/live/live.ts
-      - name: Publish @ezilhq/cli to npm (skipped until the NPM_TOKEN secret exists)
+      - name: Publish @ezilhq/cli to npm
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "::warning::NPM_TOKEN is not set; npm publish skipped"; exit 0; fi
+          if [ -z "$NODE_AUTH_TOKEN" ]; then echo "::error::NPM_TOKEN is not set"; exit 1; fi
           version="${GITHUB_REF_NAME#v}"
           bash .github/scripts/build-npm.sh "$version" "$RUNNER_TEMP/npm"
           printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/.npmrc"
-          if npm view "@ezilhq/cli@$version" version >/dev/null 2>&1; then echo "@ezilhq/cli@$version is already published"; exit 0; fi
-          (cd "$RUNNER_TEMP/npm" && npm publish --access public --provenance --userconfig "$RUNNER_TEMP/.npmrc")
+          if npm view "@ezilhq/cli@$version" version >/dev/null 2>&1; then echo "@ezilhq/cli@$version is already published"
+          else (cd "$RUNNER_TEMP/npm" && npm publish --access public --provenance --userconfig "$RUNNER_TEMP/.npmrc"); fi
           rm -f "$RUNNER_TEMP/.npmrc"
-      - name: Publish the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "EZiL CLI $GITHUB_REF_NAME" --notes "Unsigned binaries; verify with SHA256SUMS."
+      - name: Install @ezilhq/cli from the registry and check it runs
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for _ in $(seq 1 20); do npm view "@ezilhq/cli@$version" version >/dev/null 2>&1 && break; sleep 6; done
+          npm install -g --prefix "$RUNNER_TEMP/npm-prefix" "@ezilhq/cli@$version"
+          test "$("$RUNNER_TEMP/npm-prefix/bin/ezil" --version)" = "ezil $version"
+          echo "npm install -g @ezilhq/cli@$version works"

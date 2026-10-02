@@ -2,10 +2,18 @@
 	"name": "@ezil/cli",
 	"version": "0.1.0",
 	"private": true,
-	"license": "UNLICENSED",
+	"license": "Apache-2.0",
 	"type": "module",
-	"bin": { "ezil": "./bin/ezil.ts" },
-	"exports": { ".": "./src/index.ts" },
-	"scripts": { "typecheck": "tsc --noEmit -p tsconfig.json" },
-	"dependencies": { "@ezil/cli-contract": "workspace:*" }
+	"bin": {
+		"ezil": "./bin/ezil.ts"
+	},
+	"exports": {
+		".": "./src/index.ts"
+	},
+	"scripts": {
+		"typecheck": "tsc --noEmit -p tsconfig.json"
+	},
+	"dependencies": {
+		"@ezil/cli-contract": "workspace:*"
+	}
 }

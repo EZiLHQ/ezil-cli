@@ -1,0 +1,23 @@
+name: Bug report
+description: Something in the CLI, the installers or github.ezil.work does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "**Remove every credential** (tokens, `egg_…` grants, cookies) from anything you paste. Security problems go to the private form instead."
+  - type: input
+    id: version
+    attributes: { label: Version, description: "npm version or release tag, and how you installed it" }
+    validations: { required: true }
+  - type: input
+    id: platform
+    attributes: { label: Platform, description: "OS, CPU, git --version, node --version if using npm" }
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes: { label: Steps to reproduce }
+    validations: { required: true }
+  - type: textarea
+    id: expected
+    attributes: { label: Expected and actual behaviour, description: "Include the exact error text (it is safe; the CLI never prints credentials)." }
+    validations: { required: true }

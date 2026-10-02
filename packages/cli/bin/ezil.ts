@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * `ezil` -- three commands, and one of them must never misbehave.
+ * `ezil` -- command dispatch with a hook branch that must never interrupt work.
  *
  * `connect` and `flush` are ordinary programs: they print to stdout, they may
  * fail, and a person is watching. `hook` is not. It runs inside Claude Code,
@@ -8,7 +8,7 @@
  * non-zero exit is read as an instruction. So the `hook` branch below is
  * wrapped whole: nothing it can throw escapes, and it always ends in exit 0.
  *
- * See `src/hook.ts` for the three constraints and why each one exists.
+ * See `docs/ARCHITECTURE.md` for the hook's constraints and their rationale.
  */
 
 import { spawn, spawnSync } from "node:child_process";
@@ -26,6 +26,7 @@ import {
 	type HookInput,
 	type HookKind,
 } from "../src/index";
+import pkg from "../package.json" with { type: "json" };
 import { login, logout, sessions, whoami } from "../src/core/auth";
 import type { Io } from "../src/core/session";
 import { gitCredential, gitSetup } from "../src/modules/git/credential";
@@ -91,6 +92,9 @@ const USAGE = `ezil -- the EZiL command line (modules: git, sessions)
   ezil whoami
       Who you are signed in as, and the repositories you can clone.
 
+  ezil --version
+      The installed version.
+
   ezil git-credential <get|store|erase>
       The git credential helper. Git runs this; you don't need to.
 `;
@@ -119,6 +123,7 @@ function realIo(): Io {
 async function main(): Promise<number> {
 	const argv = process.argv.slice(2);
 	const command = argv[0];
+	if (command === "--version" || command === "-v" || command === "version") { process.stdout.write(`ezil ${pkg.version}\n`); return 0; }
 	const projectRoot = process.cwd();
 
 	if (command === "hook") {
@@ -149,31 +154,13 @@ async function main(): Promise<number> {
 		const accessToken = optionOf(argv, "token") ?? process.env["EZIL_ACCESS_TOKEN"];
 
 		/*
-		 * There is no early exit here any more, and its removal is the point of
-		 * `docs/TASKS.csv` W6.
+		 * `connect()` resolves the grant: an explicit bearer, otherwise
+		 * `EZIL_EMAIL`/`EZIL_PASSWORD`, otherwise an interactive prompt.
+		 * This branch passes through the options so every sign-in path is reachable.
 		 *
-		 * This branch used to refuse without a bearer and explain that "the API
-		 * has no sign-in route: apps/api serves /signup, /account, /v1/me and
-		 * /v1/creator-profile". That was true when it was written and became
-		 * false the day **T8** landed `/auth/signin`, `/auth/refresh` and
-		 * `/auth/config` -- at which point it was not a stale note, it was this
-		 * command telling every worker something about the product that was not
-		 * so, and refusing to do the thing it was telling them was impossible.
-		 *
-		 * `connect()` now resolves the grant itself: this bearer if there is
-		 * one, otherwise `EZIL_EMAIL`/`EZIL_PASSWORD`, otherwise a prompt. So
-		 * the whole decision belongs there and this branch simply passes on what
-		 * it was given.
-		 *
-		 * The spread rather than `accessToken` is not style.
-		 * `exactOptionalPropertyTypes` is on (`tsconfig.base.json`), which makes
-		 * `accessToken: undefined` a DIFFERENT thing from an absent
-		 * `accessToken` -- and `ConnectOptions` declares it optional, not
-		 * `string | undefined`. An empty string is dropped with the same
-		 * expression, so `EZIL_ACCESS_TOKEN=` in a shell profile means "no
-		 * token" rather than "a token that happens to be empty", which is the
-		 * distinction `builderRequestHeaders` draws on the other side of this
-		 * product for the same reason.
+		 * With `exactOptionalPropertyTypes`, an absent `accessToken` differs from
+		 * `accessToken: undefined`. The conditional spread omits both undefined and
+		 * empty values so an empty environment variable means no supplied token.
 		 */
 		const result = await connect({
 			apiOrigin,

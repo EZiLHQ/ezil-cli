@@ -2,12 +2,12 @@ import { z } from "zod";
 
 /**
  * The pinned contract between the github.ezil.work gateway Worker
- * (`apps/git-gateway` in `EZiLHQ/ezil-cli`) and the Works API (`POST /internal/git/authorize`,
- * `POST /internal/git/annotate`). EZiL CLI plan, sections B and C.
+ * (`apps/git-gateway` in `EZiLHQ/ezil-cli`) and the EZiL Works API
+ * (`POST /internal/git/authorize`, `POST /internal/git/annotate`).
+ * See `docs/ARCHITECTURE.md` for the design.
  *
- * Each repository keeps an identical copy of this file (here, and `packages/contract/src/git-gateway.ts`
- * in EZiLHQ/ezil-cli), and both pin its digest in a test, so neither side can
- * invent a second version of the wire format.
+ * The EZiL Works repository keeps an identical copy. Both repositories pin
+ * the digest in a test to detect local changes to the wire format.
  *
  * Signing: HMAC-SHA256 over `${timestamp}.${body}` with `GIT_GATEWAY_SECRET`.
  * It's sent as hex in `x-ezil-signature`, with a 13-digit millisecond
