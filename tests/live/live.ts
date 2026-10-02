@@ -97,6 +97,18 @@ try {
 		step(push.code !== 0 && /read-only access/.test(push.stderr), "push to a read-only repository is refused with the builder's sentence");
 	}
 
+	// 4b. When the builder also has a read-only repository (staffed, no task), its push is refused at the edge,
+	// before anything reaches Artifacts: the audited `scope_read_only` denial.
+	const readOnly = me.success ? me.data.repositories.find(r => r.access === "read" && r.repository !== repo!.repository) : undefined;
+	if (repo!.access === "write" && readOnly) {
+		const roUrl = readOnly.cloneUrl.replace("https://github.ezil.work/", `https://${GATEWAY}/`);
+		step((await run(["git", "clone", "-q", roUrl, "read-only"])).code === 0, `clone read-only ${readOnly.repository}`);
+		const roDir = join(home, "read-only");
+		await run(["git", "commit", "-q", "--allow-empty", "-m", "ezil-cli live e2e (must be refused)"], roDir);
+		const refused = await run(["git", "push", "-q", "origin", `HEAD:refs/heads/${branch}`], roDir);
+		step(refused.code !== 0 && /read-only access/.test(refused.stderr), "push to a read-only repository is refused with the builder's sentence");
+	}
+
 	// 5. An unknown repository answers like a forbidden one, so a URL can't be used to probe.
 	const unknown = await run(["git", "ls-remote", `https://${GATEWAY}/no-such-namespace/no-such-repo.git`]);
 	step(unknown.code !== 0, "unknown repository is refused");

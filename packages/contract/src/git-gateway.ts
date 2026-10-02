@@ -6,7 +6,7 @@ import { z } from "zod";
  * `POST /internal/git/annotate`). EZiL CLI plan, sections B and C.
  *
  * Each repository keeps an identical copy of this file (here, and `packages/contract/src/git-gateway.ts`
- * in EZiLHQ/ezil-cli), and both pin its digest (`cli-contract-digest.test.ts`), so neither side can
+ * in EZiLHQ/ezil-cli), and both pin its digest in a test, so neither side can
  * invent a second version of the wire format.
  *
  * Signing: HMAC-SHA256 over `${timestamp}.${body}` with `GIT_GATEWAY_SECRET`.

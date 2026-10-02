@@ -6,7 +6,7 @@ import { z } from "zod";
  *
  * Zod schemas render as JSON Schema, regular expressions as source and flags, functions as whitespace-normalised
  * source, everything else as JSON. The EZiL CLI and EZiL Works each keep a copy of these contract files and pin the
- * same digests (`digest.test.ts` here, `packages/contracts/src/surface/cli-contract-digest.test.ts` in Works), so a
+ * same digests (`digest.test.ts` here, `packages/contracts/src/cli-contract-digest.test.ts` in Works), so a
  * change on one side fails that side's tests until the other side has the same change.
  */
 export function contractDigest(module: Record<string, unknown>): string {
