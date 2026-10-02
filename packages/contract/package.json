@@ -1,0 +1,9 @@
+{
+	"name": "@ezil/cli-contract",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"exports": { "./*": "./src/*.ts" },
+	"dependencies": { "zod": "4.4.3" },
+	"scripts": { "typecheck": "tsc --noEmit -p tsconfig.json" }
+}

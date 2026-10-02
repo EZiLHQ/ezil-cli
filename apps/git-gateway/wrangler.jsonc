@@ -1,0 +1,24 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // github.ezil.work: a thin Git smart-HTTP gateway in front of Cloudflare Artifacts.
+  // EZiL CLI plan, section C and the deployment runbook. Not deployed until the founder approves (decision D0).
+  "name": "ezil-git-gateway",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "routes": [
+    { "pattern": "github.ezil.work", "custom_domain": true },
+    { "pattern": "git.ezil.work", "custom_domain": true }
+  ],
+  "vars": { "API_ORIGIN": "https://api.ezil.work" },
+  // Per grant and per IP hash (gateway.ts). Bindings are not inherited by environments, so staging repeats it.
+  "ratelimits": [{ "name": "RL", "namespace_id": "4201", "simple": { "limit": 120, "period": 60 } }],
+  // Secrets, set with `wrangler secret put` (never in this file): GIT_GATEWAY_SECRET, IP_HASH_SALT.
+  "env": {
+    "staging": {
+      "routes": [{ "pattern": "git-staging.ezil.work", "custom_domain": true }],
+      "vars": { "API_ORIGIN": "https://api.ezil.work" },
+      "ratelimits": [{ "name": "RL", "namespace_id": "4202", "simple": { "limit": 120, "period": 60 } }]
+    }
+  }
+}

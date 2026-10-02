@@ -1,0 +1,17 @@
+{
+	"name": "ezil-cli-workspace",
+	"private": true,
+	"type": "module",
+	"workspaces": ["packages/*", "apps/*", "tests"],
+	"scripts": {
+		"typecheck": "bun run --filter '*' typecheck",
+		"test": "bun test --no-env-file packages apps tests/e2e",
+		"check": "bun run typecheck && bun run test"
+	},
+	"devDependencies": {
+		"@types/bun": "^1.3.14",
+		"typescript": "^7.0.2"
+	},
+	"engines": { "bun": ">=1.3.14" },
+	"packageManager": "bun@1.3.14"
+}

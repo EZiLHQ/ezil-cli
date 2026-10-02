@@ -1,0 +1,15 @@
+{
+	/*
+	 * The BUILD configuration: what wrangler bundles and deploys. Mirrors apps/notion-cron:
+	 * the base's strict flags, no ambient types, DOM for the Workers fetch/WebCrypto globals,
+	 * tests excluded. tsconfig.dev.json adds the tests back with Bun's types.
+	 */
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"extends": "../../tsconfig.base.json",
+	"compilerOptions": {
+		"types": [],
+		"lib": ["ESNext", "DOM"]
+	},
+	"include": ["src/**/*.ts"],
+	"exclude": ["src/**/*.test.ts"]
+}

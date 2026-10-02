@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ESNext"],
+    "types": ["bun"],
+
+    /*
+     * The settings below are the reason a rewrite in this language is an
+     * upgrade to correctness rather than a risk to it.
+     *
+     * EZiL Universe enforced its hardest rules with PHP's weakest available
+     * approximations: a union return type standing in for a sum type, and a
+     * `match` over a backed enum that throws `UnhandledMatchError` at runtime.
+     * Both are real, and both fail on the freelancer's request rather than on
+     * the author's machine. Every flag here converts one of those into a
+     * compile error.
+     *
+     * None of them are negotiable per-package. A package that needs an escape
+     * hatch needs a design conversation, not a looser tsconfig.
+     */
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "useUnknownInCatchVariables": true,
+
+    /*
+     * `erasableSyntaxOnly` keeps the source runnable by anything that only
+     * strips types -- Bun, Node's type stripping, esbuild. It rules out enums
+     * and parameter properties, which is a small loss against never needing a
+     * build step to run a test.
+     */
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+
+    "skipLibCheck": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}
