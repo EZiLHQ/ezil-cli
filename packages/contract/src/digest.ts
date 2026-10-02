@@ -4,15 +4,20 @@ import { z } from "zod";
 /**
  * A canonical digest of a contract module: every export, by name, in a stable rendering.
  *
- * Zod schemas render as JSON Schema, regular expressions as source and flags, functions as whitespace-normalised
+ * Zod schemas render as JSON Schema (input and output), regular expressions as source and flags, functions as whitespace-normalised
  * source, everything else as JSON. The EZiL CLI and EZiL Works each keep a copy of these contract files and pin the
  * same digests (`digest.test.ts` here, `packages/contracts/src/cli-contract-digest.test.ts` in Works), so a
- * change on one side fails that side's tests until the other side has the same change.
+ * change to a copy fails that repository's test until its constant is updated (see the test for what that does not prove).
  */
 export function contractDigest(module: Record<string, unknown>): string {
 	const render = (value: unknown): unknown => {
 		// Duck-typed, not `instanceof`: each repository resolves its own zod, and the digest must not depend on which.
-		if (value && typeof value === "object" && "_zod" in value) return { schema: z.toJSONSchema(value as z.ZodType, { unrepresentable: "any" }) };
+		// Both directions: output-mode JSON Schema renders strict and stripping objects alike (additionalProperties
+		// false); input mode tells strict, strip and loose apart, so dropping a `.strict()` changes the digest.
+		if (value && typeof value === "object" && "_zod" in value) return {
+			input: z.toJSONSchema(value as z.ZodType, { io: "input", unrepresentable: "any" }),
+			output: z.toJSONSchema(value as z.ZodType, { unrepresentable: "any" }),
+		};
 		if (value instanceof RegExp) return { regexp: value.source, flags: value.flags };
 		if (typeof value === "function") return { fn: value.toString().replace(/\s+/g, " ").trim() };
 		return value;

@@ -30,6 +30,9 @@ const CLI = join(import.meta.dir, "..", "..", "packages", "cli", "bin", "ezil.ts
 const LEAK = /egg_[0-9a-f]{8}|art_v1_|eca_[0-9a-f]|ecr_[0-9a-f]|ecd_[0-9a-f]/;
 
 if (!PASSWORD) { console.error("EZIL_E2E_QA_PASSWORD is required."); process.exit(2); }
+// The helper wrapper below rewrites `host=` past the CLI's own allow-list and puts this name in a shell line, so it
+// must be an EZiL host and a plain hostname: a grant can then only ever be sent to an EZiL edge.
+if (!/^[a-z0-9-]+(\.[a-z0-9-]+)*\.ezil\.work$/.test(GATEWAY)) { console.error(`EZIL_LIVE_GATEWAY must be an *.ezil.work host, got ${JSON.stringify(GATEWAY)}.`); process.exit(2); }
 const home = mkdtempSync(join(tmpdir(), "ezil-live-"));
 const transcript: string[] = [];
 let failed = false;

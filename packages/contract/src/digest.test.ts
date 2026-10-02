@@ -12,11 +12,17 @@ import * as sessionEvidence from "./session-evidence";
  * EZiL-Works `packages/contracts/src/surface/` (same file, same zod version), then update the constant in both
  * repositories in the same change window. The zod version is part of the digest on purpose: two zod releases
  * validate `iso.datetime()` differently, and that is a wire difference.
+ *
+ * What this does NOT do: compare the two repositories. Each side checks only its own copy against its own constant,
+ * so a change re-pinned on one side alone passes here. Cross-repository compatibility is proven at runtime instead:
+ * the deployed gateway parses every production authorize answer with the strict schema, and the EZiL CLI live E2E
+ * parses the real /cli answers with cli-api.ts. Re-pinning without the matching change on the other side is a review
+ * failure this test cannot catch. Refinements (`.refine`) and pure type changes are invisible to the digest.
  */
 export const EZIL_CLI_CONTRACT_DIGESTS = {
-	gitGateway: "a4ca013e9511dc9aad12d344b0a804a88a0d4dc7503206704224f0d9e3b51a44",
-	sessionEvidence: "9154d50b67ce7116ce8e9528b94395a5adb38bdb3f2aca220908d66b999f5d36",
-	cliApi: "5fba79cadbcab8f9f1560b754a9fff7654f896b8a5fd626b5f44c1e1aec690f7",
+	gitGateway: "21fb1e2edba04e02e04a5442bef5e34a7ba6159b03917fc8127e1e1f929776b1",
+	sessionEvidence: "0913dfeb44dd3fd95b40e262475a6f8faad982a127be6840d039f40535b3ca98",
+	cliApi: "27ac2e3a9d2d4a12e9b836a79f91e56cd1aa521c8dda0dc58ce0db88d758cfb3",
 } as const;
 
 it("matches the digests EZiL Works pins", () => {

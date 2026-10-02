@@ -106,7 +106,18 @@ jobs:
         with:
           node-version: '22'
       - run: bun install --frozen-lockfile
+      - name: Record the version production serves now (the rollback target)
+        id: before
+        working-directory: apps/git-gateway
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          version="$( (./node_modules/.bin/wrangler deployments list --json 2>/dev/null || echo '[]') | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{let d=[];try{d=JSON.parse(s)}catch{}process.stdout.write(d.at?.(-1)?.versions?.[0]?.version_id??"")})')"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Rollback target: ${version:-none (first deploy)}"
       - name: Deploy production gateway (github.ezil.work, git.ezil.work)
+        id: deploy
         working-directory: apps/git-gateway
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -129,13 +140,19 @@ jobs:
           EZIL_LIVE_GATEWAY: github.ezil.work
           EZIL_E2E_QA_PASSWORD: ${{ secrets.EZIL_E2E_QA_PASSWORD }}
         run: bun tests/live/live.ts
-      - name: Roll back the gateway if the smoke failed
-        if: failure()
+      # Only after this job's deploy succeeded and a later step (secrets, probe, smoke) failed, and only to the exact
+      # version that was serving before it. A bare `wrangler rollback` targets the previous deployment, which here is
+      # the secret binding of the same failing code.
+      - name: Roll back to the version that was serving before this deploy
+        if: failure() && steps.deploy.outcome == 'success' && steps.before.outputs.version != ''
         working-directory: apps/git-gateway
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: ./node_modules/.bin/wrangler rollback --yes --message "ezil-cli $GITHUB_SHA failed its live smoke"
+          TARGET: ${{ steps.before.outputs.version }}
+        run: |
+          ./node_modules/.bin/wrangler rollback "$TARGET" --yes --message "ezil-cli $GITHUB_SHA failed after deploy"
+          bash ../../.github/scripts/probe.sh https://github.ezil.work any
 
   release:
     needs: check

@@ -34,3 +34,11 @@ Between steps 2 and 4, the gateway fails closed (503), and no access is granted.
 - **Gateway:** run `wrangler rollback` in `apps/git-gateway` (CI does this on a failed production smoke). Or remove the Custom Domain, which takes the hostname offline.
 - **API secret:** delete the Vercel variable. `/internal/git/*` then refuses everything, which fails safe.
 - **Schema:** it's additive and stays. Nothing writes to it unless the CLI is used.
+
+## Known limits (from the independent review, 2026-10-02)
+- **Staging is a second production edge.** `git-staging.ezil.work` talks to the production Works API (`api.ezil.work`; there is no staging API) with the same `GIT_GATEWAY_SECRET`. Its live E2E pushes a throwaway branch to a real QA-tenant repository and deletes it. What staging isolates is the gateway code, not the data.
+- **The GitHub environments have no reviewers,** and the secrets are repository-level. So `production` runs automatically after a green staging run, the same as `ezil-ai-gateway`. To gate production, add a required reviewer to the `production` environment.
+- **The runner user is in the `docker` group,** so the `check` job of a same-repository PR has near-root access to the shared host. That's the same as the existing `register.sh` services. Fork PRs never run on it.
+- **The QA builder's password is the seeded default** in EZiL-Works `tools/seed-qa.ts`, and it is known to anyone with read access to that repository. Rotating it means updating the account, the `EZIL_E2E_QA_PASSWORD` secret, and the Works QA suites together.
+- **`/health` is public** and shows the deployed commit SHA.
+- **The contract digests pin each repository against itself only.** Cross-repository compatibility is proven at runtime: the gateway parses production answers strictly, and the live E2E parses `/cli` answers. See `packages/contract/src/digest.test.ts`.
