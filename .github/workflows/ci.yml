@@ -61,6 +61,16 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bunx wrangler deploy --env staging --var "EZIL_COMMIT:$GITHUB_SHA"
+      - name: Bind the staging Worker secrets (idempotent; the API holds the same GIT_GATEWAY_SECRET)
+        working-directory: apps/git-gateway
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GIT_GATEWAY_SECRET: ${{ secrets.GIT_GATEWAY_SECRET }}
+          IP_HASH_SALT: ${{ secrets.IP_HASH_SALT }}
+        run: |
+          printf %s "$GIT_GATEWAY_SECRET" | bunx wrangler secret put GIT_GATEWAY_SECRET --env staging
+          printf %s "$IP_HASH_SALT" | bunx wrangler secret put IP_HASH_SALT --env staging
       - name: Probe staging health reports this commit, configured
         run: bash .github/scripts/probe.sh https://git-staging.ezil.work
       - name: Live E2E against real Works API and Artifacts
@@ -92,6 +102,16 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: bunx wrangler deploy --var "EZIL_COMMIT:$GITHUB_SHA"
+      - name: Bind the production Worker secrets (idempotent; the API holds the same GIT_GATEWAY_SECRET)
+        working-directory: apps/git-gateway
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GIT_GATEWAY_SECRET: ${{ secrets.GIT_GATEWAY_SECRET }}
+          IP_HASH_SALT: ${{ secrets.IP_HASH_SALT }}
+        run: |
+          printf %s "$GIT_GATEWAY_SECRET" | bunx wrangler secret put GIT_GATEWAY_SECRET
+          printf %s "$IP_HASH_SALT" | bunx wrangler secret put IP_HASH_SALT 
       - name: Probe production health reports this commit, configured
         run: bash .github/scripts/probe.sh https://github.ezil.work
       - name: Live smoke against production

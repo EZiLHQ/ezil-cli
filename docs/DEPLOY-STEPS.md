@@ -1,37 +1,36 @@
-# EZiL CLI: the founder's deploy steps
+# EZiL CLI: deploy and operator steps
 
-These are the steps this session's permission check won't let the agent run: secret writes and a direct `wrangler deploy`. Run them from a terminal on this VM. The secrets were generated as root-only files, so these commands read them and never print them:
+## How it deploys now
 
-- `/root/.config/ezil-git-gateway/git-gateway-secret`: the HMAC shared by the API and the gateway.
-- `/root/.config/ezil-git-gateway/ip-hash-salt`: gateway only.
+`.github/workflows/ci.yml` in `EZiLHQ/ezil-cli`. Every `main` commit runs four steps, in order:
+1. **check:** typecheck, unit tests, gateway tests and the full-chain e2e.
+2. **staging:** `wrangler deploy --env staging`, binds the secrets, probes that `/health` reports the commit with `configured=true`, then runs `tests/live` against `git-staging.ezil.work`.
+3. **production:** the same deploy, secret binding and probe for `github.ezil.work` + `git.ezil.work`, then the live smoke. The Worker is rolled back if the smoke fails.
+4. **release:** a `v*` tag builds unsigned binaries and `SHA256SUMS`.
 
-## 1. Give the production API the gateway secret (before or right after PR #40 merges)
-```bash
-VT=$(python3 -c 'import json;print(json.load(open("/root/.local/share/com.vercel.cli/auth.json"))["token"])')
-TEAM=$(curl -s -H "Authorization: Bearer $VT" https://api.vercel.com/v2/teams/ezil | python3 -c 'import json,sys;print(json.load(sys.stdin)["id"])')
-python3 -c 'import json;print(json.dumps({"key":"GIT_GATEWAY_SECRET","value":open("/root/.config/ezil-git-gateway/git-gateway-secret").read().strip(),"type":"sensitive","target":["production"]}))' \
-  | curl -s -X POST -H "Authorization: Bearer $VT" -H "Content-Type: application/json" \
-      "https://api.vercel.com/v10/projects/ezil-works-api/env?teamId=$TEAM" --data @- | python3 -c 'import json,sys;print(json.load(sys.stdin).get("created",{}) and "created" or "check output")'
-```
-- **If you set it before #40 merges:** the release from `main` picks it up.
-- **If you set it after:** redeploy the API by re-running the latest `Works CI/CD` run on `main` (manual dispatch), or with `tools/deploy-api.sh`.
+The jobs run on this repository's own runner service `ezil-aws-cli` (label `ezil-private`). It's on the same private AWS host as `ezil-aws-works` and `ezil-aws-gateway`.
 
-## 2. Deploy the gateway Worker, staging first
-```bash
-cd /data/openclaw/projects/ezil/EZiL-Works/apps/git-gateway   # after #40 is on main; or use the worktree path
-export CLOUDFLARE_API_TOKEN=$(grep -m1 '^CLOUDFLARE_API_TOKEN=' /data/openclaw/projects/ezil/EZiL-Works/apps/api/.env | cut -d= -f2-)
-wrangler deploy --env staging                                    # creates git-staging.ezil.work (Custom Domain)
-wrangler secret put GIT_GATEWAY_SECRET --env staging < /root/.config/ezil-git-gateway/git-gateway-secret
-wrangler secret put IP_HASH_SALT --env staging < /root/.config/ezil-git-gateway/ip-hash-salt
-```
-Then tell the agent "staging is up". It runs the staging end-to-end test against real Artifacts, then asks you to promote:
-```bash
-wrangler deploy                                                  # github.ezil.work + git.ezil.work
-wrangler secret put GIT_GATEWAY_SECRET < /root/.config/ezil-git-gateway/git-gateway-secret
-wrangler secret put IP_HASH_SALT < /root/.config/ezil-git-gateway/ip-hash-salt
-```
+## One-time setup (founder)
+
+Run `bash "/data/openclaw/projects/ezil/EZiL CLI/ops/founder-setup.sh"`. It:
+- creates the `staging` and `production` environments;
+- sets the repo secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `GIT_GATEWAY_SECRET`, `IP_HASH_SALT` and `EZIL_E2E_QA_PASSWORD`;
+- registers the runner service. It follows the same procedure as `EZiL-Works/infra/aws-runner/register.sh`: a short-lived token through an SSM SecureString, plus a temporary read policy, both removed afterwards.
+
+No value is printed. The script reads the gateway secret and salt from `/root/.config/ezil-git-gateway/`. They are the same values the Works API (Vercel `GIT_GATEWAY_SECRET`) and the staging Worker already hold.
+
+If the Cloudflare token in `.env` can't deploy Workers, the staging job fails at `wrangler deploy` with an auth error. In that case, mint an "Edit Cloudflare Workers" token in the dashboard and run `gh secret set CLOUDFLARE_API_TOKEN --repo EZiLHQ/ezil-cli`.
+
+## Rotating the gateway secret
+
+1. Generate a new value.
+2. Set it on Vercel `ezil-works-api` (`GIT_GATEWAY_SECRET`, sensitive, production) and redeploy the API.
+3. Run `gh secret set GIT_GATEWAY_SECRET --repo EZiLHQ/ezil-cli`.
+4. Re-run the latest `main` workflow.
+
+Between steps 2 and 4, the gateway fails closed (503), and no access is granted.
 
 ## Rollback
-- **Gateway:** `wrangler deployments rollback`, or delete the Worker. Without it, the hostnames are simply offline.
-- **API secret:** delete the variable in Vercel. `/internal/git/*` then refuses everything, which fails safe.
-- **Schema:** the schema is additive and stays. Nothing writes to it unless the CLI is used.
+- **Gateway:** run `wrangler rollback` in `apps/git-gateway` (CI does this on a failed production smoke). Or remove the Custom Domain, which takes the hostname offline.
+- **API secret:** delete the Vercel variable. `/internal/git/*` then refuses everything, which fails safe.
+- **Schema:** it's additive and stays. Nothing writes to it unless the CLI is used.
