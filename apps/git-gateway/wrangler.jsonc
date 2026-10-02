@@ -13,12 +13,15 @@
   "vars": { "API_ORIGIN": "https://api.ezil.work" },
   // Per grant and per IP hash (gateway.ts). Bindings are not inherited by environments, so staging repeats it.
   "ratelimits": [{ "name": "RL", "namespace_id": "4201", "simple": { "limit": 120, "period": 60 } }],
+  // CLI downloads (/install.sh, /cli/<version>/<file>). Written only by the ezil-cli release job.
+  "r2_buckets": [{ "binding": "RELEASES", "bucket_name": "ezil-cli-releases" }],
   // Secrets, set with `wrangler secret put` (never in this file): GIT_GATEWAY_SECRET, IP_HASH_SALT.
   "env": {
     "staging": {
       "routes": [{ "pattern": "git-staging.ezil.work", "custom_domain": true }],
       "vars": { "API_ORIGIN": "https://api.ezil.work" },
-      "ratelimits": [{ "name": "RL", "namespace_id": "4202", "simple": { "limit": 120, "period": 60 } }]
+      "ratelimits": [{ "name": "RL", "namespace_id": "4202", "simple": { "limit": 120, "period": 60 } }],
+      "r2_buckets": [{ "binding": "RELEASES", "bucket_name": "ezil-cli-releases" }]
     }
   }
 }

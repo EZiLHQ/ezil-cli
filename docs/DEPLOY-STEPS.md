@@ -6,7 +6,9 @@
 1. **check:** typecheck, unit tests, gateway tests and the full-chain e2e.
 2. **staging:** `wrangler deploy --env staging`, binds the secrets, probes that `/health` reports the commit with `configured=true`, then runs `tests/live` against `git-staging.ezil.work`.
 3. **production:** the same deploy, secret binding and probe for `github.ezil.work` + `git.ezil.work`, then the live smoke. The Worker is rolled back if the smoke fails.
-4. **release:** a `v*` tag builds unsigned binaries and `SHA256SUMS`.
+4. **release:** a `v*` tag must match `packages/cli/package.json`. It builds unsigned binaries and `SHA256SUMS`, uploads them to R2 `ezil-cli-releases` (served at `github.ezil.work/cli/<version>/`), then moves `cli/latest`. It then installs from the live URL and runs the live E2E with the installed binary, and publishes a GitHub release.
+
+**To release:** bump `packages/cli/package.json`, merge, wait for the `main` run, then `git tag v<version> && git push origin v<version>`.
 
 The jobs run on this repository's own runner service `ezil-aws-cli` (label `ezil-private`). It's on the same private AWS host as `ezil-aws-works` and `ezil-aws-gateway`.
 

@@ -2,6 +2,17 @@
 
 `ezil`, the EZiL command line, and the edge it talks to.
 
+## Install
+
+```
+curl -fsSL https://github.ezil.work/install.sh | sh          # macOS, Linux
+irm https://github.ezil.work/install.ps1 | iex                # Windows (PowerShell)
+```
+
+The installer picks the binary for your OS and CPU, checks its SHA-256, and installs it for your user only
+(`~/.local/bin/ezil`, or `%LOCALAPPDATA%\Programs\ezil\ezil.exe`). `EZIL_VERSION=0.1.0` pins a version,
+`EZIL_INSTALL_DIR` picks the directory. The binaries are unsigned for now.
+
 ```
 ezil auth login          # sign this device in (a code you approve in the browser)
 ezil whoami              # who you are, and the repositories you can clone

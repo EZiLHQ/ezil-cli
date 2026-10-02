@@ -200,3 +200,34 @@ it("rate-limits by grant when the binding exists", async () => {
 	expect(limited.status).toBe(429);
 	expect(h.api).toHaveLength(0);
 });
+
+describe("downloads (installers and release files)", () => {
+	const releases = (objects: Record<string, string>) => ({ get: async (key: string) => key in objects
+		? { body: new Response(objects[key]).body!, size: new TextEncoder().encode(objects[key]).length, httpEtag: `"${key}"` } : null });
+	const get = (path: string, over: Partial<GatewayEnv> = {}) => handle(new Request(`https://github.ezil.work${path}`), { ...env, ...over }, harness().deps);
+	it("serves both installers without credentials or an API call", async () => {
+		for (const [path, marker] of [["/install.sh", "#!/bin/sh"], ["/install.ps1", "irm https://github.ezil.work/install.ps1"]] as const) {
+			const response = await get(path);
+			expect(response.status).toBe(200);
+			expect(await response.text()).toContain(marker);
+		}
+	});
+	it("streams only versioned release files and SHA256SUMS from R2, with honest headers", async () => {
+		const RELEASES = releases({ "cli/latest": "0.1.0", "cli/0.1.0/ezil-0.1.0-linux-x64": "ELF", "cli/0.1.0/SHA256SUMS": "abc  ezil-0.1.0-linux-x64\n", "secret/x": "no" });
+		expect(await (await get("/cli/latest", { RELEASES })).text()).toBe("0.1.0");
+		const binary = await get("/cli/0.1.0/ezil-0.1.0-linux-x64", { RELEASES });
+		expect(binary.status).toBe(200);
+		expect(binary.headers.get("content-type")).toBe("application/octet-stream");
+		expect(binary.headers.get("content-length")).toBe("3");
+		expect(binary.headers.get("cache-control")).toContain("immutable");
+		expect((await get("/cli/0.1.0/SHA256SUMS", { RELEASES })).headers.get("content-type")).toContain("text/plain");
+		for (const path of ["/cli/0.1.0/ezil-0.2.0-linux-x64", "/cli/0.1.0/../../secret/x", "/cli/0.1.0/ezil-0.1.0-plan9-x64", "/cli/x/SHA256SUMS", "/secret/x", "/cli/0.1.0/"])
+			expect((await get(path, { RELEASES })).status).toBe(404);
+		expect((await get("/cli/0.9.9/SHA256SUMS", { RELEASES })).status).toBe(404); // a shape-valid name that was never released
+	});
+	it("says downloads are unavailable rather than 404 when the bucket is not bound", async () => {
+		expect((await get("/cli/latest")).status).toBe(503);
+		expect((await get("/install.sh")).status).toBe(200);
+	});
+});
+

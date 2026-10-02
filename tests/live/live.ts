@@ -27,6 +27,10 @@ const API = (process.env["EZIL_API_ORIGIN"] ?? "https://api.ezil.work").replace(
 const EMAIL = process.env["EZIL_E2E_QA_EMAIL"] ?? "qa-builder@ezil.work";
 const PASSWORD = process.env["EZIL_E2E_QA_PASSWORD"];
 const CLI = join(import.meta.dir, "..", "..", "packages", "cli", "bin", "ezil.ts");
+/** EZIL_CLI_BIN tests an installed binary (the release job sets it); otherwise this checkout's source runs under Bun. */
+const INSTALLED = process.env["EZIL_CLI_BIN"];
+const EZIL: string[] = INSTALLED ? [INSTALLED] : [process.execPath, CLI];
+const EZIL_SHELL = EZIL.map(part => `'${part.replace(/'/g, "'\\''")}'`).join(" ");
 const LEAK = /egg_[0-9a-f]{8}|art_v1_|eca_[0-9a-f]|ecr_[0-9a-f]|ecd_[0-9a-f]/;
 
 if (!PASSWORD) { console.error("EZIL_E2E_QA_PASSWORD is required."); process.exit(2); }
@@ -53,7 +57,7 @@ async function post(path: string, token: string, body: unknown) {
 
 try {
 	// 1. `ezil auth login`, approved the way the /cli/approve page does it: describe, then approve, as the builder.
-	const login = Bun.spawn([process.execPath, CLI, "auth", "login"], { cwd: home, env, stdout: "pipe", stderr: "pipe" });
+	const login = Bun.spawn([...EZIL, "auth", "login"], { cwd: home, env, stdout: "pipe", stderr: "pipe" });
 	const reader = login.stdout.getReader(); let seen = "";
 	while (!/[A-Z0-9]{4}-[A-Z0-9]{4}/.test(seen)) { const { value, done } = await reader.read(); if (done) break; seen += new TextDecoder().decode(value); }
 	const userCode = /([A-Z0-9]{4}-[A-Z0-9]{4})/.exec(seen)?.[1];
@@ -69,7 +73,7 @@ try {
 	step(await login.exited === 0, "ezil auth login completes");
 
 	// 2. whoami through the CLI and, for the contract check, through the API with the stored session.
-	const who = await run([process.execPath, CLI, "whoami"]);
+	const who = await run([...EZIL, "whoami"]);
 	step(who.code === 0, "ezil whoami");
 	const session = JSON.parse(await Bun.file(join(home, ".ezil", "cli-session.json")).text())[API] as { accessToken: string };
 	const me = WhoamiResponseSchema.safeParse(await (await fetch(`${API}/cli/whoami`, { headers: { authorization: `Bearer ${session.accessToken}` } })).json());
@@ -81,7 +85,7 @@ try {
 	const rewrite = GATEWAY === "github.ezil.work" ? "cat" : `sed 's/^host=${GATEWAY.replace(/\./g, "\\.")}$/host=github.ezil.work/'`;
 	for (const args of [["user.name", "EZiL live e2e"], ["user.email", EMAIL], [`credential.https://${GATEWAY}.helper`, ""]])
 		await run(["git", "config", "--global", ...args]);
-	await run(["git", "config", "--global", "--add", `credential.https://${GATEWAY}.helper`, `!f(){ ${rewrite} | '${process.execPath}' '${CLI}' git-credential "$1"; }; f`]);
+	await run(["git", "config", "--global", "--add", `credential.https://${GATEWAY}.helper`, `!f(){ ${rewrite} | ${EZIL_SHELL} git-credential "$1"; }; f`]);
 	await run(["git", "config", "--global", `credential.https://${GATEWAY}.useHttpPath`, "true"]);
 	const url = repo!.cloneUrl.replace("https://github.ezil.work/", `https://${GATEWAY}/`);
 	const clone = await run(["git", "clone", "-q", url]);
@@ -117,14 +121,14 @@ try {
 	step(unknown.code !== 0, "unknown repository is refused");
 
 	// 6. Logout revokes the device; the very next Git operation is refused.
-	step((await run([process.execPath, CLI, "auth", "logout"])).code === 0, "ezil auth logout");
+	step((await run([...EZIL, "auth", "logout"])).code === 0, "ezil auth logout");
 	const after = await run(["git", "fetch", "-q", "origin"], dir);
 	step(after.code !== 0 && /ezil auth login/.test(after.stderr), "fetch after logout is refused and says to sign in");
 } catch (error) {
 	step(false, error instanceof Error ? error.message : "unexpected failure");
 } finally {
 	// A run that failed early must not leave a live device session behind.
-	if (await Bun.file(join(home, ".ezil", "cli-session.json")).exists()) await run([process.execPath, CLI, "auth", "logout"]);
+	if (await Bun.file(join(home, ".ezil", "cli-session.json")).exists()) await run([...EZIL, "auth", "logout"]);
 	step(!LEAK.test(transcript.join("\n")), "no credential appeared in any output");
 	rmSync(home, { recursive: true, force: true });
 }
