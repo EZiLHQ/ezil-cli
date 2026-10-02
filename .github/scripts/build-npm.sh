@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the publishable @ezil/cli npm package: one Node ES module bundle (the CLI plus its contract), a package.json
+# Build the publishable @ezilhq/cli npm package: one Node ES module bundle (the CLI plus its contract), a package.json
 # without workspace dependencies, README and LICENSE. Usage: build-npm.sh <version> <outdir>
 set -euo pipefail
 version="$1"; out="$2"
@@ -13,7 +13,7 @@ chmod +x "$out/dist/ezil.js"
 cp README.md "$out/README.md"; cp LICENSE "$out/LICENSE"
 VERSION="$version" bun -e '
 const pkg = {
-  name: "@ezil/cli", version: process.env.VERSION,
+  name: "@ezilhq/cli", version: process.env.VERSION,
   description: "EZiL command line: sign in, clone and push EZiL repositories with plain git (github.ezil.work), session evidence for EZiL Works.",
   type: "module", bin: { ezil: "dist/ezil.js" }, files: ["dist", "README.md", "LICENSE"],
   engines: { node: ">=18" }, license: "UNLICENSED",
@@ -22,4 +22,4 @@ const pkg = {
   keywords: ["ezil", "git", "credential-helper", "cli"], publishConfig: { access: "public" },
 };
 await Bun.write(process.argv[1] + "/package.json", JSON.stringify(pkg, null, 2) + "\n");' "$out"
-echo "built $out (@ezil/cli $version)"
+echo "built $out (@ezilhq/cli $version)"

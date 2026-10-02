@@ -197,7 +197,7 @@ jobs:
           export EZIL_INSTALL_DIR="$RUNNER_TEMP/ezil-bin" EZIL_VERSION="${GITHUB_REF_NAME#v}"
           curl -fsSL https://github.ezil.work/install.sh | sh
           EZIL_LIVE_GATEWAY=github.ezil.work EZIL_CLI_BIN="$EZIL_INSTALL_DIR/ezil" bun tests/live/live.ts
-      - name: Publish @ezil/cli to npm (skipped until the NPM_TOKEN secret exists)
+      - name: Publish @ezilhq/cli to npm (skipped until the NPM_TOKEN secret exists)
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -206,7 +206,7 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           bash .github/scripts/build-npm.sh "$version" "$RUNNER_TEMP/npm"
           printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$RUNNER_TEMP/.npmrc"
-          if npm view "@ezil/cli@$version" version >/dev/null 2>&1; then echo "@ezil/cli@$version is already published"; exit 0; fi
+          if npm view "@ezilhq/cli@$version" version >/dev/null 2>&1; then echo "@ezilhq/cli@$version is already published"; exit 0; fi
           (cd "$RUNNER_TEMP/npm" && npm publish --access public --provenance --userconfig "$RUNNER_TEMP/.npmrc")
           rm -f "$RUNNER_TEMP/.npmrc"
       - name: Publish the GitHub release

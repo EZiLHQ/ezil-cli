@@ -7,8 +7,8 @@
 ```
 curl -fsSL https://github.ezil.work/install.sh | sh          # macOS, Linux
 irm https://github.ezil.work/install.ps1 | iex                # Windows (PowerShell)
-npm install -g @ezil/cli                                       # anywhere with Node 18+
-npx @ezil/cli auth login                                       # or without installing
+npm install -g @ezilhq/cli                                     # anywhere with Node 18+
+npx @ezilhq/cli auth login                                     # or without installing
 ```
 
 The installer picks the binary for your OS and CPU, checks its SHA-256, and installs it for your user only
@@ -56,7 +56,7 @@ bun tests/live/live.ts   # against git-staging.ezil.work; needs EZIL_E2E_QA_PASS
 
 `.github/workflows/ci.yml`, on GitHub-hosted runners (public repository):
 check on every PR; on `main`, deploy the gateway to staging, then the live E2E, then production, then the live smoke,
-which rolls back on failure. On a `v*` tag: unsigned binaries for macOS, Linux and Windows plus `SHA256SUMS`, and `@ezil/cli` published to npm.
+which rolls back on failure. On a `v*` tag: unsigned binaries for macOS, Linux and Windows plus `SHA256SUMS`, and `@ezilhq/cli` published to npm.
 
 ## License
 
