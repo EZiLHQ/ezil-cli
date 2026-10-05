@@ -234,3 +234,68 @@ describe("downloads (installers and release redirects)", () => {
 			expect((await get(path)).status).toBe(404);
 	});
 });
+
+describe("canonical host: the production address is github.ezil.work and no Cloudflare address ever reaches a client", () => {
+	const ACCOUNT = "0".repeat(32);
+	const FORBIDDEN = [".artifacts.cloudflare.net", "workers.dev", ACCOUNT, "art_v1_", "git-staging.ezil.work"];
+	const auth = { authorization: basic(GRANT) };
+	const sendTo = (host: string, path: string, h: ReturnType<typeof harness>, init: RequestInit = {}) =>
+		handle(new Request(`https://${host}${path}`, init), env, h.deps);
+	const dump = async (response: Response) => `${[...response.headers].map(([k, v]) => `${k}: ${v}`).join("\n")}\n${await response.text()}`;
+
+	it("brings an Artifacts redirect back through the host the client used, whichever spelling Artifacts answers with", async () => {
+		for (const host of ["github.ezil.work", "git.ezil.work"]) {
+			for (const location of [`${REMOTE}/info/refs?service=git-upload-pack`, "/git/p-x/source.git/info/refs?service=git-upload-pack"]) {
+				const h = harness(undefined, () => new Response(null, { status: 301, headers: { location } }));
+				const response = await sendTo(host, infoRefs, h, { headers: auth });
+				expect(response.status).toBe(301);
+				expect(response.headers.get("location")).toBe(`https://${host}${infoRefs}`);
+				const shown = await dump(response);
+				for (const needle of FORBIDDEN) expect(shown).not.toContain(needle);
+			}
+		}
+	});
+	it("refuses a redirect that leaves the repository, and shows nothing of where it pointed", async () => {
+		for (const location of ["https://evil.example/steal", `https://${ACCOUNT}.artifacts.cloudflare.net/git/p-other/other.git/info/refs`,
+			`${REMOTE}-sibling/info/refs`, "https://[bad"]) {
+			const h = harness(undefined, () => new Response("moved", { status: 302, headers: { location } }));
+			const response = await h.send(infoRefs, { headers: auth });
+			expect(response.status).toBe(502);
+			expect(response.headers.get("location")).toBeNull();
+			const shown = await dump(response);
+			for (const needle of FORBIDDEN) expect(shown).not.toContain(needle);
+			expect(shown).not.toContain("evil.example");
+		}
+	});
+	it("serves the compatibility host exactly as the canonical one, with the same sentences", async () => {
+		const [canonical, compat] = [harness(), harness()];
+		const a = await sendTo("github.ezil.work", infoRefs, canonical, { headers: auth });
+		const b = await sendTo("git.ezil.work", infoRefs, compat, { headers: auth });
+		expect([b.status, await b.text()]).toEqual([a.status, await a.text()]);
+		expect(compat.up[0]!.url).toBe(canonical.up[0]!.url);
+		const challenge = await sendTo("git.ezil.work", infoRefs, harness());
+		expect(challenge.status).toBe(401);
+	});
+	it("names only github.ezil.work on its landing page and installers, from either host", async () => {
+		for (const host of ["github.ezil.work", "git.ezil.work"]) {
+			for (const path of ["/", "/install.sh", "/install.ps1"]) {
+				const shown = await dump(await sendTo(host, path, harness()));
+				expect(shown).toContain("https://github.ezil.work");
+				for (const needle of [...FORBIDDEN, "git.ezil.work"]) expect({ host, path, found: shown.includes(needle) ? needle : null }).toEqual({ host, path, found: null });
+			}
+		}
+	});
+	it("shows no Cloudflare address in any answer the gateway composes itself", async () => {
+		const answers: Response[] = [];
+		answers.push(await harness().send(infoRefs));
+		answers.push(await harness(() => { throw new Error("down"); }).send(infoRefs, { headers: auth }));
+		answers.push(await harness(() => Response.json({ decision: "deny", status: 403, reason: "repo_not_selected", message: "x" })).send(infoRefs, { headers: auth }));
+		answers.push(await harness(() => Response.json(allow({ artifactsRemote: "https://evil.example/git/p-x/source.git" }))).send(infoRefs, { headers: auth }));
+		answers.push(await harness(undefined, () => { throw new Error(`connect ${ACCOUNT}.artifacts.cloudflare.net`); }).send(infoRefs, { headers: auth }));
+		answers.push(await harness().send("/acme/acme.git/HEAD", { headers: auth }));
+		for (const answer of answers) {
+			const shown = await dump(answer);
+			for (const needle of FORBIDDEN) expect(shown).not.toContain(needle);
+		}
+	});
+});

@@ -76,4 +76,4 @@ export {
 export * from "./core/paths";
 export { accessToken, apiOriginOf, DEFAULT_API_ORIGIN, fileStore, keychainStore, storeFor, type CliSession, type Io, type SessionStore } from "./core/session";
 export { login, logout, sessions, whoami, type SetupStep } from "./core/auth";
-export { GIT_HOSTS, gitConfigCommands, gitCredential, gitSetup } from "./modules/git/credential";
+export { CANONICAL_GIT_HOST, COMPAT_GIT_HOSTS, GIT_HOSTS, gitConfigCommands, gitCredential, gitSetup } from "./modules/git/credential";

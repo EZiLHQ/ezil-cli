@@ -42,6 +42,6 @@ bun tests/live/live.ts                             # the deployed pair, as the Q
 
 ## Deploy
 CI deploys it (`.github/workflows/ci.yml`): every `main` commit goes to `git-staging.ezil.work`, must report its
-commit on `/health` and pass `tests/live`, then goes to `github.ezil.work` + `git.ezil.work`, which must pass the same
-smoke or are rolled back. Secrets are bound on the Worker once (`wrangler secret put GIT_GATEWAY_SECRET` and
+commit on `/health` and pass `tests/live`, then goes to `github.ezil.work` (canonical; `git.ezil.work` is a compatibility alias served by the same Worker, probed on every
+release), which must pass the same smoke or is rolled back. Secrets are bound on the Worker once (`wrangler secret put GIT_GATEWAY_SECRET` and
 `IP_HASH_SALT`, per environment) and survive deploys. The Custom Domain creates the DNS record and the certificate.

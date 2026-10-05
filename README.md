@@ -31,7 +31,7 @@ Other commands:
 
 ## How Git authentication works
 
-1. `ezil auth login` runs a device-code sign-in that you approve in the browser. It stores a device session in your OS keychain: macOS Keychain, or Linux Secret Service. Where there is no keychain, including Windows for now, it uses `~/.ezil/cli-session.json` with mode 0600. It also points git's credential helper for `github.ezil.work` and `git.ezil.work` at `ezil git-credential`, with `useHttpPath` on.
+1. `ezil auth login` runs a device-code sign-in that you approve in the browser. It stores a device session in your OS keychain: macOS Keychain, or Linux Secret Service. Where there is no keychain, including Windows for now, it uses `~/.ezil/cli-session.json` with mode 0600. It also points git's credential helper for `github.ezil.work` (and its compatibility alias `git.ezil.work`) at `ezil git-credential`, with `useHttpPath` on.
 2. For each git operation, the helper asks EZiL for a **grant**: one repository, at most 15 minutes, read or write as your access allows. Grants are never stored. An empty helper entry for this host keeps other credential managers from saving them.
 3. `github.ezil.work` checks the grant with EZiL on every operation, then forwards to the repository's storage with a short-lived token that never leaves the server. A closed task, a revoked device or a logout takes effect on the next fetch or push.
 
@@ -49,7 +49,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the components and trust bo
 | `503 … unavailable` | EZiL's authorization service is unreachable; retry shortly. |
 | `413` on push | The push is larger than one request body allows; push in smaller pieces. |
 
-To uninstall, run `ezil auth logout`. Then remove the binary (or `npm rm -g @ezilhq/cli`), `~/.ezil/`, and the `credential.https://github.ezil.work.*` and `credential.https://git.ezil.work.*` entries in `~/.gitconfig`.
+To uninstall, run `ezil auth logout`. Then remove the binary (or `npm rm -g @ezilhq/cli`), `~/.ezil/`, and the `credential.https://github.ezil.work.*` and (compatibility alias) `credential.https://git.ezil.work.*` entries in `~/.gitconfig`.
 
 ## Repository layout
 

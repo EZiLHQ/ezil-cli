@@ -71,6 +71,13 @@ async function download(pathname: string, env: GatewayEnv, deps: GatewayDeps): P
 
 const maskRemote = (url: string) => url.replace(/^https:\/\/[0-9a-f]{32}\./, "https://***.");
 
+/** A redirect Artifacts answers with must lead back through this gateway: its own host (and account label) is never a client address. */
+function publicLocation(location: string, upstreamUrl: string, remote: string, publicBase: string): string | null {
+	let target: URL;
+	try { target = new URL(location, upstreamUrl); } catch { return null; }
+	return target.href.startsWith(`${remote}/`) || target.href === remote ? `${publicBase}${target.href.slice(remote.length)}` : null;
+}
+
 function grantFrom(header: string | null): string | null {
 	const match = /^Basic ([A-Za-z0-9+/=]+)$/.exec(header ?? "");
 	if (!match) return null;
@@ -191,5 +198,17 @@ export async function handle(request: Request, env: GatewayEnv, deps: GatewayDep
 	}
 	const out = new Headers();
 	upstream.headers.forEach((value, name) => { if (!DROP_RESPONSE.has(name.toLowerCase())) out.set(name, value); });
+	const location = upstream.headers.get("location");
+	if (location !== null) {
+		const rewritten = publicLocation(location, upstreamUrl, allow.artifactsRemote, `${url.origin}/${route.routeNamespace}/${route.routeName}.git`);
+		if (rewritten) out.set("location", rewritten);
+		else {
+			out.delete("location");
+			if (upstream.status >= 300 && upstream.status < 400) {
+				await upstream.body?.cancel();
+				return finish(text(502, "EZiL: the Git backend is unavailable. Try again shortly.\n", { "retry-after": "5" }), { upstream: maskRemote(upstreamUrl), decision: "bad_redirect" });
+			}
+		}
+	}
 	return finish(new Response(upstream.body, { status: upstream.status, headers: out }), { upstreamStatus: upstream.status, decision: "allow" });
 }

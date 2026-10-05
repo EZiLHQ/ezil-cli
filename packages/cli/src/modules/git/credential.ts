@@ -7,7 +7,11 @@ import type { SetupStep } from "../../core/auth";
  * ≤15-minute EZiL grant for exactly that repository. The server half is `apps/git-gateway`.
  */
 
-export const GIT_HOSTS = ["github.ezil.work", "git.ezil.work"] as const;
+/** The one production Git host: every URL the CLI prints or configures uses it. Staging (git-staging.ezil.work) is never a CLI default. */
+export const CANONICAL_GIT_HOST = "github.ezil.work";
+/** Served by the same Worker so remotes cloned before the rename keep working; the CLI only ever answers for it, it never prints it. */
+export const COMPAT_GIT_HOSTS = ["git.ezil.work"] as const;
+export const GIT_HOSTS = [CANONICAL_GIT_HOST, ...COMPAT_GIT_HOSTS] as const;
 
 /** The git config `ezil auth login` writes, shown to the user before it's applied. */
 export function gitConfigCommands(): string[][] {
@@ -21,8 +25,8 @@ export function gitConfigCommands(): string[][] {
 
 /** What `ezil auth login` configures for git once the device is signed in. */
 export function gitSetup(): SetupStep {
-	return { title: "Configuring git for github.ezil.work:", commands: gitConfigCommands(),
-		done: "Done. Clone with: git clone https://github.ezil.work/<namespace>/<repo>.git (see `ezil whoami`)." };
+	return { title: `Configuring git for ${CANONICAL_GIT_HOST}:`, commands: gitConfigCommands(),
+		done: `Done. Clone with: git clone https://${CANONICAL_GIT_HOST}/<namespace>/<repo>.git (see \`ezil whoami\`).` };
 }
 
 /**
@@ -38,10 +42,10 @@ export async function gitCredential(io: Io, operation: string, stdin: string): P
 	// Loopback only, so a mistyped or hostile setting can never hand a grant to a plain-http host on the network.
 	const testHost = io.env["EZIL_GIT_TEST_HOST"];
 	if (testHost && /^(127\.0\.0\.1|localhost):\d{1,5}$/.test(testHost) && fields["protocol"] === "http" && host === testHost.toLowerCase()) {
-		fields["protocol"] = "https"; host = GIT_HOSTS[0];
+		fields["protocol"] = "https"; host = CANONICAL_GIT_HOST;
 	}
 	if (fields["protocol"] !== "https" || !(GIT_HOSTS as readonly string[]).includes(host)) return 0;
-	if (!fields["path"]) { io.err("ezil: set `git config --global credential.https://github.ezil.work.useHttpPath true` (ezil auth login does this)."); return 0; }
+	if (!fields["path"]) { io.err(`ezil: set \`git config --global credential.https://${CANONICAL_GIT_HOST}.useHttpPath true\` (ezil auth login does this).`); return 0; }
 	try {
 		const live = await accessToken(io);
 		if (!live) { io.err("ezil: not signed in. Run `ezil auth login`."); return 0; }

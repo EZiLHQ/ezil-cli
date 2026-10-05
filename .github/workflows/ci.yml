@@ -147,6 +147,8 @@ jobs:
           printf %s "$IP_HASH_SALT" | ./node_modules/.bin/wrangler secret put IP_HASH_SALT
       - name: Probe production health reports this commit, configured
         run: bash .github/scripts/probe.sh https://github.ezil.work
+      - name: Probe the compatibility host (git.ezil.work) serves the same commit
+        run: bash .github/scripts/probe.sh https://git.ezil.work
       - name: Live smoke against production
         env:
           EZIL_LIVE_GATEWAY: github.ezil.work
