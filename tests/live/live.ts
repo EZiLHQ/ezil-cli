@@ -32,6 +32,8 @@ const INSTALLED = process.env["EZIL_CLI_BIN"];
 const EZIL: string[] = INSTALLED ? [INSTALLED] : [process.execPath, CLI];
 const EZIL_SHELL = EZIL.map(part => `'${part.replace(/'/g, "'\\''")}'`).join(" ");
 const LEAK = /egg_[0-9a-f]{8}|art_v1_|eca_[0-9a-f]|ecr_[0-9a-f]|ecd_[0-9a-f]/;
+/** The Cloudflare Artifacts and Workers addresses sit behind the gateway; no client output may ever show them. */
+const HOST_LEAK = /artifacts\.cloudflare\.net|workers\.dev/;
 
 if (!EMAIL || !PASSWORD) { console.error("EZIL_E2E_QA_EMAIL and EZIL_E2E_QA_PASSWORD are required."); process.exit(2); }
 // The helper wrapper below rewrites `host=` past the CLI's own allow-list and puts this name in a shell line, so it
@@ -78,6 +80,8 @@ try {
 	const session = JSON.parse(await Bun.file(join(home, ".ezil", "cli-session.json")).text())[API] as { accessToken: string };
 	const me = WhoamiResponseSchema.safeParse(await (await fetch(`${API}/cli/whoami`, { headers: { authorization: `Bearer ${session.accessToken}` } })).json());
 	step(me.success, "whoami matches the pinned contract");
+	step(me.success && me.data.repositories.every(r => r.cloneUrl.startsWith("https://github.ezil.work/")) && !HOST_LEAK.test(who.stdout + who.stderr),
+		"whoami offers only canonical https://github.ezil.work/ clone URLs");
 	const repo = me.success ? (me.data.repositories.find(r => r.access === "write") ?? me.data.repositories[0]) : undefined;
 	if (!step(Boolean(repo), `QA builder has a repository (${me.success ? me.data.repositories.length : 0} listed)`)) throw new Error("no repository: the QA builder needs a staffed project with a ready repository");
 
@@ -96,10 +100,15 @@ try {
 	// 4. Push: a throwaway branch for write access, deleted again; a clear refusal for read-only.
 	const branch = `ezil-cli-live-${Date.now()}`;
 	await run(["git", "commit", "-q", "--allow-empty", "-m", "ezil-cli live e2e"], dir);
+	const pushedSha = (await run(["git", "rev-parse", "HEAD"], dir)).stdout.trim();
 	const push = await run(["git", "push", "-q", "origin", `HEAD:refs/heads/${branch}`], dir);
 	if (repo!.access === "write") {
 		step(push.code === 0, "push a throwaway branch");
+		const landed = await run(["git", "ls-remote", "origin", `refs/heads/${branch}`], dir);
+		step(/^[0-9a-f]{40}$/.test(pushedSha) && landed.stdout.trim() === `${pushedSha}\trefs/heads/${branch}`, "the pushed branch is at exactly the pushed SHA");
 		step((await run(["git", "push", "-q", "origin", "--delete", branch], dir)).code === 0, "delete the throwaway branch");
+		const gone = await run(["git", "ls-remote", "origin", `refs/heads/${branch}`], dir);
+		step(gone.code === 0 && gone.stdout.trim() === "", "the throwaway branch is gone after the delete");
 	} else {
 		step(push.code !== 0 && /read-only access/.test(push.stderr), "push to a read-only repository is refused with the builder's sentence");
 	}
@@ -130,6 +139,7 @@ try {
 	// A run that failed early must not leave a live device session behind.
 	if (await Bun.file(join(home, ".ezil", "cli-session.json")).exists()) await run([...EZIL, "auth", "logout"]);
 	step(!LEAK.test(transcript.join("\n")), "no credential appeared in any output");
+	step(!HOST_LEAK.test(transcript.join("\n")), "no Cloudflare address appeared in any output");
 	rmSync(home, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);

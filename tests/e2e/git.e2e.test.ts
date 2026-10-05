@@ -272,3 +272,43 @@ it("signs in, clones into the real repo name, pushes, is audited, and is refused
 	expect(readFileSync(gitconfig, "utf8")).not.toContain("egg_");
 	expect(existsSync(join(root, ".git-credentials"))).toBe(false);
 }, 120_000);
+
+it("keeps a redirect from Artifacts on the gateway: the real git client follows it and never sees the Cloudflare address", async () => {
+	const bare = join(root, "redirect-artifacts"); mkdirSync(join(bare, NS), { recursive: true });
+	const seed = join(root, "redirect-seed"); mkdirSync(seed);
+	const gitEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(root, "redirect.gitconfig"), HOME: root, GIT_TERMINAL_PROMPT: "0", GIT_CURL_VERBOSE: "1" } as Record<string, string>;
+	expect((await run(["git", "init", "-q", "--bare", "-b", "main", join(bare, NS, "artifact-a.git")], { env: gitEnv })).code).toBe(0);
+	await run(["git", "init", "-q", "-b", "main"], { cwd: seed, env: gitEnv });
+	writeFileSync(join(seed, "README.md"), "# redirect\n");
+	await run(["git", "add", "."], { cwd: seed, env: gitEnv });
+	await run(["git", "-c", "user.name=seed", "-c", "user.email=seed@example.test", "commit", "-q", "-m", "seed"], { cwd: seed, env: gitEnv });
+	expect((await run(["git", "push", "-q", join(bare, NS, "artifact-a.git"), "main"], { cwd: seed, env: gitEnv })).code).toBe(0);
+
+	const token = `art_v1_${randomBytes(16).toString("hex")}`;
+	const artifacts = fakeArtifacts(bare, new Map([[token, { name: "artifact-a", scope: "read" as const }]])); servers.push(artifacts);
+	const api = Bun.serve({ port: 0, fetch: () => Response.json(GitAuthorizeResponseSchema.parse({ decision: "allow", scope: "read", artifactsToken: token,
+		artifactsRemote: `https://${LABEL}.artifacts.cloudflare.net/git/${NS}/artifact-a.git`, expiresAt: new Date(Date.now() + 600_000).toISOString(), operationId: randomUUID() })) });
+	servers.push(api);
+	let redirected = 0;
+	const gateway = Bun.serve({ port: 0, fetch: request => handle(request, { API_ORIGIN: `http://127.0.0.1:${api.port}`, GIT_GATEWAY_SECRET: SECRET, IP_HASH_SALT: "salt" }, {
+		fetch: ((input: string | URL | Request, init?: RequestInit) => {
+			const url = String(input);
+			if (url.startsWith(`http://127.0.0.1:${api.port}/`)) return fetch(url, init);
+			// The first discovery is answered with a redirect to Artifacts' own address, as an edge normalising the path would.
+			if (url.includes("/info/refs") && redirected++ === 0) return Promise.resolve(new Response(null, { status: 301, headers: { location: url } }));
+			const upstream = /^https:\/\/[0-9a-f]{32}\.artifacts\.cloudflare\.net(\/git\/.*)$/.exec(url);
+			return fetch(upstream ? `http://127.0.0.1:${artifacts.port}${upstream[1]}` : url, init);
+		}) as typeof fetch,
+		now: Date.now, cache: new Map(), log: () => {}, waitUntil: () => {} }) });
+	servers.push(gateway);
+
+	const grant = `egg_${randomBytes(32).toString("hex")}`;
+	const target = join(root, "redirect-clone");
+	const clone = await run(["git", "-c", `http.extraHeader=Authorization: Basic ${btoa(`ezil:${grant}`)}`, "clone", `http://127.0.0.1:${gateway.port}/acme-3f9a1c/acme.git`, target], { env: gitEnv });
+	expect(clone.code).toBe(0);
+	expect(redirected).toBeGreaterThan(1);
+	expect(existsSync(join(target, "README.md"))).toBe(true);
+	const seen = clone.stdout + clone.stderr;
+	expect(seen).toContain("Recv header: Location: http://127.0.0.1:"); // the redirect did happen, and it pointed back at the gateway
+	for (const needle of ["artifacts.cloudflare.net", LABEL, "workers.dev", token]) expect(seen).not.toContain(needle);
+}, 60_000);
