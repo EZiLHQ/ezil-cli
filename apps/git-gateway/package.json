@@ -9,7 +9,7 @@
 		"@ezil/cli-contract": "workspace:*"
 	},
 	"devDependencies": {
-		"wrangler": "^4.42.0"
+		"wrangler": "^4.147.0"
 	},
 	"license": "Apache-2.0"
 }
