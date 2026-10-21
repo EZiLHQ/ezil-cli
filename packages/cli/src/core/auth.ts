@@ -1,5 +1,5 @@
 import { hostname, platform } from "node:os";
-import { CliConfigResponseSchema, ID_TOKEN_TYPE, TOKEN_EXCHANGE_GRANT, TokenRequestSchema, TokenResponseSchema } from "@ezil/cli-contract/cli-api";
+import { CliConfigResponseSchema, EZIL_ID_ISSUER, ID_TOKEN_TYPE, TOKEN_EXCHANGE_GRANT, TokenRequestSchema, TokenResponseSchema } from "@ezil/cli-contract/cli-api";
 
 import pkg from "../../package.json" with { type: "json" };
 import { accessToken, api, ApiError, apiOriginOf, sessionFrom, storeFor, type Io, type TokenResponse } from "./session";
@@ -19,16 +19,18 @@ export interface SetupStep {
 	readonly done: string;
 }
 
+const EZIL_ID_DEFAULT = { issuer: EZIL_ID_ISSUER, clientId: "Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx", scope: "openid email profile" } as const;
+
 export async function login(io: Io, setup: readonly SetupStep[] = [], options: { legacy?: boolean } = {}): Promise<number> {
 	const origin = apiOriginOf(io.env);
-	let identity: ReturnType<typeof CliConfigResponseSchema.parse>["identity"] = null;
+	let identity: ReturnType<typeof CliConfigResponseSchema.parse>["identity"] = options.legacy ? null : EZIL_ID_DEFAULT;
 	if (!options.legacy) {
 		try {
 			const config = CliConfigResponseSchema.safeParse(await api(io, origin, "/cli/config"));
 			if (!config.success) { io.err("EZiL returned an invalid sign-in configuration."); return 1; }
 			identity = config.data.identity;
 		} catch (error) {
-			if (!(error instanceof ApiError && error.status === 404)) throw error;
+			if (!(error instanceof ApiError && (error.status === 404 || (error.status === 0 && error.code === "network")))) throw error;
 		}
 	}
 	const os = (["darwin", "linux", "win32", "freebsd"] as const).find(p => p === platform()) ?? "other";
@@ -45,17 +47,21 @@ export async function login(io: Io, setup: readonly SetupStep[] = [], options: {
 			return completeLogin(io, origin, result.data, setup);
 		} catch (error) {
 			// Never echo provider payloads, error descriptions, or an exchange response that could contain a token.
-			const messages: Record<string, string> = {
-				identity_disabled: "EZiL ID is not enabled. Run `ezil auth login --legacy`.",
-				identity_token_invalid: "EZiL ID could not verify this sign-in. Run `ezil auth login` again.",
-				identity_unverified: "Verify your EZiL ID email before signing in.",
-				no_account: "Sign up at app.ezil.work first.",
-				account_suspended: "This EZiL account is suspended.",
-				identity_unavailable: "EZiL ID is unavailable. Try again shortly.",
-			};
-			const message = error instanceof ApiError && Object.hasOwn(messages, error.code) ? messages[error.code] : undefined;
-			io.err(message ?? (error instanceof ApiError && error.status === 429 ? "Too many sign-in attempts. Try again shortly." : "EZiL ID sign-in failed. Run `ezil auth login` again."));
-			return 1;
+			if (error instanceof ApiError && (error.status === 404 || (error.status === 400 && error.code === "invalid_request"))) {
+				io.out("This EZiL server does not accept EZiL ID sign-in yet; falling back to the EZiL device code.");
+			} else {
+				const messages: Record<string, string> = {
+					identity_disabled: "EZiL ID is not enabled. Run `ezil auth login --legacy`.",
+					identity_token_invalid: "EZiL ID could not verify this sign-in. Run `ezil auth login` again.",
+					identity_unverified: "Verify your EZiL ID email before signing in.",
+					no_account: "Sign up at app.ezil.work first.",
+					account_suspended: "This EZiL account is suspended.",
+					identity_unavailable: "EZiL ID is unavailable. Try again shortly.",
+				};
+				const message = error instanceof ApiError && Object.hasOwn(messages, error.code) ? messages[error.code] : undefined;
+				io.err(message ?? (error instanceof ApiError && error.status === 429 ? "Too many sign-in attempts. Try again shortly." : "EZiL ID sign-in failed. Run `ezil auth login` again."));
+				return 1;
+			}
 		}
 	}
 	const started = await api<{ deviceCode: string; userCode: string; verificationUriComplete: string; verificationUri: string; expiresAt: string; interval: number }>(

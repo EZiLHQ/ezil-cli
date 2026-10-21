@@ -13,6 +13,7 @@ describe("ezil auth login", () => {
 	it("shows a code, polls until approved, stores the session and configures git for github.ezil.work only", async () => {
 		let polls = 0;
 		const h = io((path) => {
+			if (path === "/cli/config") return Response.json({ identity: null });
 			if (path === "/cli/login/device") return Response.json({ deviceCode: `ecd_${"d".repeat(64)}`, userCode: "BCDF-GHJK",
 				verificationUri: "https://app.test/cli/approve", verificationUriComplete: "https://app.test/cli/approve?code=BCDF-GHJK",
 				expiresAt: new Date(Date.now() + 300_000).toISOString(), interval: 5 });
@@ -28,10 +29,10 @@ describe("ezil auth login", () => {
 		// Credentials are never printed.
 		expect(h.out.join("\n")).not.toContain("eca_"); expect(h.out.join("\n")).not.toContain("ecr_"); expect(h.out.join("\n")).not.toContain("ecd_");
 	});
-	for (const config of ["null", "404", "legacy"] as const) {
+	for (const config of ["null", "legacy"] as const) {
 		it(`uses the original device flow when config is ${config}`, async () => {
 			const h = io((path) => {
-				if (path === "/cli/config") return config === "404" ? new Response("Not found", { status: 404 }) : Response.json({ identity: null });
+				if (path === "/cli/config") return Response.json({ identity: config === "null" ? null : IDENTITY });
 				if (path === "/cli/login/device") return Response.json({ deviceCode: `ecd_${"d".repeat(64)}`, userCode: "BCDF-GHJK",
 					verificationUri: "https://app.test/cli/approve", verificationUriComplete: "https://app.test/cli/approve?code=BCDF-GHJK",
 					expiresAt: new Date(Date.now() + 300_000).toISOString(), interval: 5 });
@@ -82,16 +83,29 @@ const EZIL_SESSION_ID = "12345678-1234-4234-8234-123456789abc";
 const EZIL_TOKENS = { access_token: `eca_${EZIL_SESSION_ID}_${"a".repeat(64)}`, refresh_token: `ecr_${EZIL_SESSION_ID}_${"b".repeat(64)}`,
 	token_type: "Bearer", expires_at: "2030-01-01T00:00:00.000Z", session_id: EZIL_SESSION_ID, session_expires_at: "2031-01-01T00:00:00.000Z" };
 
-function identityHarness(poll: (attempt: number) => Response | Promise<Response>, options: { expiresIn?: number; interval?: number; exchange?: () => Response } = {}) {
+function identityHarness(poll: (attempt: number) => Response | Promise<Response>, options: {
+	expiresIn?: number; interval?: number; exchange?: () => Response; config?: () => Response; identity?: typeof IDENTITY;
+} = {}) {
 	const order: string[] = [];
 	const sleeps: number[] = [];
+	const identity = options.identity ?? IDENTITY;
 	let now = Date.now();
 	let polls = 0;
 	const h = io((path, body, auth) => {
 		order.push(path);
 		expect(auth).toBeNull();
-		if (path === "/cli/config") return Response.json({ identity: IDENTITY });
+		if (path === "/cli/config") return options.config ? options.config() : Response.json({ identity: IDENTITY });
+		if (path === "/cli/login/device") {
+			expect(writes).toEqual([]);
+			return Response.json({ deviceCode: `ecd_${"d".repeat(64)}`, userCode: "JKLM-NPQR",
+				verificationUri: "https://app.test/cli/approve", verificationUriComplete: "https://app.test/cli/approve?code=JKLM-NPQR",
+				expiresAt: new Date(now + 300_000).toISOString(), interval: 5 });
+		}
 		if (path === "/cli/token") {
+			if (body?.["grant_type"] === "device_code") {
+				expect(body).toEqual({ grant_type: "device_code", device_code: `ecd_${"d".repeat(64)}` });
+				return Response.json(EZIL_TOKENS);
+			}
 			expect(body).toEqual({ grant_type: TOKEN_EXCHANGE_GRANT, subject_token: AUTH0_ID, subject_token_type: ID_TOKEN_TYPE,
 				deviceLabel: expect.any(String), os: expect.any(String), cliVersion: "0.1.0" });
 			return options.exchange ? options.exchange() : Response.json({ ...EZIL_TOKENS, id_token: AUTH0_ID });
@@ -120,13 +134,13 @@ function identityHarness(poll: (attempt: number) => Response | Promise<Response>
 			const path = url.slice(EZIL_ID_ISSUER.length);
 			order.push(path);
 			if (path === "oauth/device/code") {
-				expect(body).toEqual({ client_id: IDENTITY.clientId, scope: IDENTITY.scope });
+				expect(body).toEqual({ client_id: identity.clientId, scope: identity.scope });
 				return Response.json({ device_code: AUTH0_DEVICE, user_code: "BCDF-GHJK", verification_uri: "https://id.ezil.work/activate",
 					verification_uri_complete: "https://id.ezil.work/activate?user_code=BCDF-GHJK", expires_in: options.expiresIn ?? 300,
 					...(options.interval === undefined ? {} : { interval: options.interval }) });
 			}
 			expect(path).toBe("oauth/token");
-			expect(body).toEqual({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: AUTH0_DEVICE, client_id: IDENTITY.clientId });
+			expect(body).toEqual({ grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: AUTH0_DEVICE, client_id: identity.clientId });
 			return poll(++polls);
 		}) as typeof fetch };
 	return { ...h, order, sleeps, writes };
@@ -135,10 +149,29 @@ function identityHarness(poll: (attempt: number) => Response | Promise<Response>
 function expectNoIdentityTokens(h: ReturnType<typeof identityHarness>) {
 	const visible = JSON.stringify([h.out, h.err, h.store.value, h.writes, h.ran, h.opened]);
 	for (const secret of [AUTH0_ACCESS, AUTH0_REFRESH, AUTH0_ID, AUTH0_DEVICE]) expect(visible).not.toContain(secret);
+	const output = JSON.stringify([h.out, h.err, h.ran, h.opened]);
+	for (const secret of [EZIL_TOKENS.access_token, EZIL_TOKENS.refresh_token, `ecd_${"d".repeat(64)}`]) expect(output).not.toContain(secret);
 }
 
 describe("EZiL ID device login", () => {
-	it("gets config, handles pending and cumulative slow_down, exchanges the ID token, stores only EZiL tokens and sets up Git", async () => {
+	for (const config of ["404", "network"] as const) {
+		it(`uses the built-in EZiL ID client when config fails with ${config}`, async () => {
+			const h = identityHarness(() => Response.json({ access_token: AUTH0_ACCESS, refresh_token: AUTH0_REFRESH, id_token: AUTH0_ID }), {
+				identity: { issuer: EZIL_ID_ISSUER, clientId: "Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx", scope: "openid email profile" },
+				config: () => {
+					if (config === "network") throw new TypeError("network down");
+					return new Response("Not found", { status: 404 });
+				},
+			});
+			expect(await login(h.io, [gitSetup()])).toBe(0);
+			expect(h.order).toEqual(["/cli/config", "oauth/device/code", "oauth/token", "/cli/token"]);
+			expect(h.store.value?.accessToken).toBe(EZIL_TOKENS.access_token);
+			expect(h.writes).toEqual([h.store.value!]);
+			expect(h.ran).toEqual(gitConfigCommands());
+			expectNoIdentityTokens(h);
+		});
+	}
+	it("uses the config override, handles pending and cumulative slow_down, exchanges the ID token, stores only EZiL tokens and sets up Git", async () => {
 		const h = identityHarness(attempt => attempt < 5
 			? Response.json({ error: attempt === 1 || attempt === 4 ? "authorization_pending" : "slow_down" }, { status: 403 })
 			: Response.json({ access_token: AUTH0_ACCESS, refresh_token: AUTH0_REFRESH, id_token: AUTH0_ID }), { interval: 2 });
@@ -153,6 +186,54 @@ describe("EZiL ID device login", () => {
 		expect(h.ran).toEqual(gitConfigCommands());
 		expectNoIdentityTokens(h);
 	});
+	for (const status of [400, 404]) {
+		it(`falls back to the legacy device flow when exchange returns ${status}`, async () => {
+			const h = identityHarness(() => Response.json({ access_token: AUTH0_ACCESS, refresh_token: AUTH0_REFRESH, id_token: AUTH0_ID }), {
+				exchange: () => status === 404 ? new Response(AUTH0_ID, { status }) : Response.json({
+					error: "invalid_request", message: AUTH0_ACCESS, error_description: AUTH0_REFRESH, id_token: AUTH0_ID,
+				}, { status }),
+			});
+			expect(await login(h.io, [gitSetup()])).toBe(0);
+			expect(h.order).toEqual(["/cli/config", "oauth/device/code", "oauth/token", "/cli/token", "/cli/login/device", "/cli/token"]);
+			expect(h.out.slice(0, 4)).toEqual([
+				"To sign in, open https://id.ezil.work/activate and enter the code:  BCDF-GHJK",
+				"This EZiL server does not accept EZiL ID sign-in yet; falling back to the EZiL device code.",
+				"To sign in, open https://app.test/cli/approve and enter the code:  JKLM-NPQR",
+				"Signed in.",
+			]);
+			expect(h.out.filter(line => line.includes("falling back"))).toHaveLength(1);
+			expect(h.err).toEqual([]);
+			expect(h.opened).toEqual(["https://id.ezil.work/activate?user_code=BCDF-GHJK", "https://app.test/cli/approve?code=JKLM-NPQR"]);
+			expect(h.store.value?.accessToken).toBe(EZIL_TOKENS.access_token);
+			expect(h.writes).toEqual([h.store.value!]);
+			expect(h.ran).toEqual(gitConfigCommands());
+			expectNoIdentityTokens(h);
+		});
+	}
+	for (const [status, error, message] of [
+		[400, "identity_disabled", "EZiL ID is not enabled. Run `ezil auth login --legacy`."],
+		[401, "identity_token_invalid", "EZiL ID could not verify this sign-in. Run `ezil auth login` again."],
+		[403, "identity_unverified", "Verify your EZiL ID email before signing in."],
+		[403, "no_account", "Sign up at app.ezil.work first."],
+		[403, "account_suspended", "This EZiL account is suspended."],
+		[503, "identity_unavailable", "EZiL ID is unavailable. Try again shortly."],
+		[429, "rate_limited", "Too many sign-in attempts. Try again shortly."],
+		[400, "unexpected", "EZiL ID sign-in failed. Run `ezil auth login` again."],
+		[403, "invalid_request", "EZiL ID sign-in failed. Run `ezil auth login` again."],
+	] as const) {
+		it(`keeps the ${status} ${error} refusal without legacy fallback or token disclosure`, async () => {
+			const h = identityHarness(() => Response.json({ id_token: AUTH0_ID }), {
+				exchange: () => Response.json({ error, message: AUTH0_ACCESS, error_description: AUTH0_REFRESH, id_token: AUTH0_ID }, { status }),
+			});
+			expect(await login(h.io, [gitSetup()])).toBe(1);
+			expect(h.order).toEqual(["/cli/config", "oauth/device/code", "oauth/token", "/cli/token"]);
+			expect(h.err).toEqual([message]);
+			expect(h.store.value).toBeNull();
+			expect(h.writes).toEqual([]);
+			expect(h.ran).toEqual([]);
+			expectNoIdentityTokens(h);
+		});
+	}
 	it("refuses a successful provider response without an id_token before exchange or storage", async () => {
 		const h = identityHarness(() => Response.json({ access_token: AUTH0_ACCESS, refresh_token: AUTH0_REFRESH }));
 		expect(await login(h.io, [gitSetup()])).toBe(1);
