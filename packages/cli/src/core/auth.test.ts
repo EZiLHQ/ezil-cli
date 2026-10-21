@@ -107,7 +107,7 @@ function identityHarness(poll: (attempt: number) => Response | Promise<Response>
 				return Response.json(EZIL_TOKENS);
 			}
 			expect(body).toEqual({ grant_type: TOKEN_EXCHANGE_GRANT, subject_token: AUTH0_ID, subject_token_type: ID_TOKEN_TYPE,
-				deviceLabel: expect.any(String), os: expect.any(String), cliVersion: "0.1.0" });
+				deviceLabel: expect.any(String), os: expect.any(String), cliVersion: expect.stringMatching(/^[0-9A-Za-z.+-]{1,32}$/) });
 			return options.exchange ? options.exchange() : Response.json({ ...EZIL_TOKENS, id_token: AUTH0_ID });
 		}
 		throw new Error("Unexpected API request");
