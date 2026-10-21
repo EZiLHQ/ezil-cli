@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { join } from "node:path";
-import { ACCESS_TOKEN_TYPE, EZIL_ID_ISSUER, TOKEN_EXCHANGE_GRANT } from "@ezil/cli-contract/cli-api";
+import { EZIL_ID_ISSUER, ID_TOKEN_TYPE, TOKEN_EXCHANGE_GRANT } from "@ezil/cli-contract/cli-api";
 
 import { gitConfigCommands, gitSetup } from "../modules/git/credential";
 import { login, logout } from "./auth";
@@ -73,7 +73,7 @@ describe("ezil auth login", () => {
 	});
 });
 
-const IDENTITY = { issuer: EZIL_ID_ISSUER, clientId: "native-client", audience: "https://api.ezil.work", scope: "openid email" };
+const IDENTITY = { issuer: EZIL_ID_ISSUER, clientId: "native-client", scope: "openid email" };
 const AUTH0_ACCESS = "auth0-access-token-must-stay-private";
 const AUTH0_REFRESH = "auth0-refresh-token-must-stay-private";
 const AUTH0_ID = "auth0-id-token-must-stay-private";
@@ -92,7 +92,7 @@ function identityHarness(poll: (attempt: number) => Response | Promise<Response>
 		expect(auth).toBeNull();
 		if (path === "/cli/config") return Response.json({ identity: IDENTITY });
 		if (path === "/cli/token") {
-			expect(body).toEqual({ grant_type: TOKEN_EXCHANGE_GRANT, subject_token: AUTH0_ACCESS, subject_token_type: ACCESS_TOKEN_TYPE,
+			expect(body).toEqual({ grant_type: TOKEN_EXCHANGE_GRANT, subject_token: AUTH0_ID, subject_token_type: ID_TOKEN_TYPE,
 				deviceLabel: expect.any(String), os: expect.any(String), cliVersion: "0.1.0" });
 			return options.exchange ? options.exchange() : Response.json({ ...EZIL_TOKENS, id_token: AUTH0_ID });
 		}
@@ -120,7 +120,7 @@ function identityHarness(poll: (attempt: number) => Response | Promise<Response>
 			const path = url.slice(EZIL_ID_ISSUER.length);
 			order.push(path);
 			if (path === "oauth/device/code") {
-				expect(body).toEqual({ client_id: IDENTITY.clientId, scope: IDENTITY.scope, audience: IDENTITY.audience });
+				expect(body).toEqual({ client_id: IDENTITY.clientId, scope: IDENTITY.scope });
 				return Response.json({ device_code: AUTH0_DEVICE, user_code: "BCDF-GHJK", verification_uri: "https://id.ezil.work/activate",
 					verification_uri_complete: "https://id.ezil.work/activate?user_code=BCDF-GHJK", expires_in: options.expiresIn ?? 300,
 					...(options.interval === undefined ? {} : { interval: options.interval }) });
@@ -138,7 +138,7 @@ function expectNoIdentityTokens(h: ReturnType<typeof identityHarness>) {
 }
 
 describe("EZiL ID device login", () => {
-	it("gets config, handles pending and cumulative slow_down, exchanges, stores only EZiL tokens and sets up Git", async () => {
+	it("gets config, handles pending and cumulative slow_down, exchanges the ID token, stores only EZiL tokens and sets up Git", async () => {
 		const h = identityHarness(attempt => attempt < 5
 			? Response.json({ error: attempt === 1 || attempt === 4 ? "authorization_pending" : "slow_down" }, { status: 403 })
 			: Response.json({ access_token: AUTH0_ACCESS, refresh_token: AUTH0_REFRESH, id_token: AUTH0_ID }), { interval: 2 });
@@ -151,6 +151,16 @@ describe("EZiL ID device login", () => {
 		expect(h.store.value).toEqual({ apiOrigin: ORIGIN, sessionId: EZIL_SESSION_ID, accessToken: EZIL_TOKENS.access_token,
 			refreshToken: EZIL_TOKENS.refresh_token, accessExpiresAt: EZIL_TOKENS.expires_at });
 		expect(h.ran).toEqual(gitConfigCommands());
+		expectNoIdentityTokens(h);
+	});
+	it("refuses a successful provider response without an id_token before exchange or storage", async () => {
+		const h = identityHarness(() => Response.json({ access_token: AUTH0_ACCESS, refresh_token: AUTH0_REFRESH }));
+		expect(await login(h.io, [gitSetup()])).toBe(1);
+		expect(h.err).toEqual(["EZiL ID did not return an identity token."]);
+		expect(h.order).toEqual(["/cli/config", "oauth/device/code", "oauth/token"]);
+		expect(h.store.value).toBeNull();
+		expect(h.writes).toEqual([]);
+		expect(h.ran).toEqual([]);
 		expectNoIdentityTokens(h);
 	});
 	for (const error of ["access_denied", "expired_token", "invalid_grant"] as const) {

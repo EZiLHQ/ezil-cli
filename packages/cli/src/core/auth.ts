@@ -1,5 +1,5 @@
 import { hostname, platform } from "node:os";
-import { ACCESS_TOKEN_TYPE, CliConfigResponseSchema, TOKEN_EXCHANGE_GRANT, TokenRequestSchema, TokenResponseSchema } from "@ezil/cli-contract/cli-api";
+import { CliConfigResponseSchema, ID_TOKEN_TYPE, TOKEN_EXCHANGE_GRANT, TokenRequestSchema, TokenResponseSchema } from "@ezil/cli-contract/cli-api";
 
 import pkg from "../../package.json" with { type: "json" };
 import { accessToken, api, ApiError, apiOriginOf, sessionFrom, storeFor, type Io, type TokenResponse } from "./session";
@@ -38,7 +38,7 @@ export async function login(io: Io, setup: readonly SetupStep[] = [], options: {
 			const subject = await identityToken(io, identity);
 			if (subject === null) return 1;
 			const body = TokenRequestSchema.safeParse({ grant_type: TOKEN_EXCHANGE_GRANT, subject_token: subject,
-				subject_token_type: ACCESS_TOKEN_TYPE, ...device });
+				subject_token_type: ID_TOKEN_TYPE, ...device });
 			if (!body.success) { io.err("EZiL ID returned an invalid sign-in token or device details."); return 1; }
 			const result = TokenResponseSchema.safeParse(await api(io, origin, "/cli/token", { body: body.data }));
 			if (!result.success) { io.err("EZiL returned an invalid device session."); return 1; }
@@ -107,7 +107,7 @@ async function oauth(io: Io, issuer: string, path: string, fields: Record<string
 
 async function identityToken(io: Io, identity: NonNullable<ReturnType<typeof CliConfigResponseSchema.parse>["identity"]>): Promise<string | null> {
 	const startedAt = io.now();
-	const started = await oauth(io, identity.issuer, "oauth/device/code", { client_id: identity.clientId, scope: identity.scope, audience: identity.audience });
+	const started = await oauth(io, identity.issuer, "oauth/device/code", { client_id: identity.clientId, scope: identity.scope });
 	const { device_code, user_code, verification_uri, verification_uri_complete, expires_in, interval = 5 } = started.body;
 	if (!started.ok || typeof device_code !== "string" || !device_code || typeof user_code !== "string" || !user_code ||
 		typeof verification_uri !== "string" || new URL(verification_uri).protocol !== "https:" ||
@@ -124,8 +124,11 @@ async function identityToken(io: Io, identity: NonNullable<ReturnType<typeof Cli
 		if (io.now() >= until) break;
 		const result = await oauth(io, identity.issuer, "oauth/token", { grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code, client_id: identity.clientId });
 		if (result.ok) {
-			if (typeof result.body["access_token"] !== "string") throw new Error("Invalid EZiL ID token.");
-			return result.body["access_token"];
+			if (typeof result.body["id_token"] !== "string" || !result.body["id_token"]) {
+				io.err("EZiL ID did not return an identity token.");
+				return null;
+			}
+			return result.body["id_token"];
 		}
 		switch (result.body["error"]) {
 			case "authorization_pending":
