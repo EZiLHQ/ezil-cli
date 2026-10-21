@@ -22,7 +22,7 @@ import * as sessionEvidence from "./session-evidence";
 export const EZIL_CLI_CONTRACT_DIGESTS = {
 	gitGateway: "21fb1e2edba04e02e04a5442bef5e34a7ba6159b03917fc8127e1e1f929776b1",
 	sessionEvidence: "0913dfeb44dd3fd95b40e262475a6f8faad982a127be6840d039f40535b3ca98",
-	cliApi: "27ac2e3a9d2d4a12e9b836a79f91e56cd1aa521c8dda0dc58ce0db88d758cfb3",
+	cliApi: "97c00cf9280e7edec365d39febc8971afbb53e7a2fee54c5aba97aef73f6328e",
 } as const;
 
 it("matches the digests EZiL Works pins", () => {

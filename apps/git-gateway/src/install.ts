@@ -42,6 +42,19 @@ esac
 echo "Next:   ezil auth login"
 `;
 
+/** Reuse the checksum-verified installer, then sign in and clone without consuming the piped script. */
+export const START_SH = `${INSTALL_SH}
+# curl -fsSL https://github.ezil.work/start.sh | sh -s -- [repository]
+PATH="$DIR:$PATH"
+export PATH
+ezil auth login </dev/null
+if [ "$#" -gt 0 ]; then
+  ezil clone "$1" </dev/null
+else
+  ezil clone </dev/null
+fi
+`;
+
 export const INSTALL_PS1 = `# EZiL CLI installer.   irm https://github.ezil.work/install.ps1 | iex
 $ErrorActionPreference = 'Stop'
 $base = if ($env:EZIL_DOWNLOAD_BASE) { $env:EZIL_DOWNLOAD_BASE } else { 'https://github.ezil.work' }
