@@ -154,14 +154,40 @@ function expectNoIdentityTokens(h: ReturnType<typeof identityHarness>) {
 }
 
 describe("EZiL ID device login", () => {
-	for (const config of ["404", "network"] as const) {
-		it(`uses the built-in EZiL ID client when config fails with ${config}`, async () => {
+	it("uses the legacy device flow without contacting EZiL ID when config returns 404", async () => {
+		const h = identityHarness(() => { throw new Error("Must not contact EZiL ID"); }, {
+			config: () => new Response("Not found", { status: 404 }),
+		});
+		expect(await login(h.io, [gitSetup()])).toBe(0);
+		expect(h.order).toEqual(["/cli/config", "/cli/login/device", "/cli/token"]);
+		expect(h.opened).toEqual(["https://app.test/cli/approve?code=JKLM-NPQR"]);
+		expect(h.store.value?.accessToken).toBe(EZIL_TOKENS.access_token);
+		expect(h.writes).toEqual([h.store.value!]);
+		expect(h.ran).toEqual(gitConfigCommands());
+		expect(h.err).toEqual([]);
+		expectNoIdentityTokens(h);
+	});
+	it("fails without starting either device flow when config has a network error", async () => {
+		const h = identityHarness(() => { throw new Error("Must not contact EZiL ID"); }, {
+			config: () => { throw new TypeError("network down"); },
+		});
+		expect(await login(h.io, [gitSetup()])).toBe(1);
+		expect(h.order).toEqual(["/cli/config"]);
+		expect(h.err).toEqual(["Could not reach EZiL. Check your connection and try again."]);
+		expect(h.out).toEqual([]);
+		expect(h.opened).toEqual([]);
+		expect(h.sleeps).toEqual([]);
+		expect(h.store.value).toBeNull();
+		expect(h.writes).toEqual([]);
+		expect(h.ran).toEqual([]);
+		expectNoIdentityTokens(h);
+	});
+	for (const missing of [["issuer"], ["clientId"], ["scope"], ["issuer", "clientId", "scope"]]) {
+		it(`uses built-in defaults only for missing identity fields: ${missing.join(", ")}`, async () => {
+			const identity = Object.fromEntries(Object.entries(IDENTITY).filter(([key]) => !missing.includes(key)));
 			const h = identityHarness(() => Response.json({ access_token: AUTH0_ACCESS, refresh_token: AUTH0_REFRESH, id_token: AUTH0_ID }), {
-				identity: { issuer: EZIL_ID_ISSUER, clientId: "Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx", scope: "openid email profile" },
-				config: () => {
-					if (config === "network") throw new TypeError("network down");
-					return new Response("Not found", { status: 404 });
-				},
+				identity: { issuer: EZIL_ID_ISSUER, clientId: "Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx", scope: "openid email profile", ...identity },
+				config: () => Response.json({ identity }),
 			});
 			expect(await login(h.io, [gitSetup()])).toBe(0);
 			expect(h.order).toEqual(["/cli/config", "oauth/device/code", "oauth/token", "/cli/token"]);

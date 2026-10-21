@@ -20,17 +20,30 @@ export interface SetupStep {
 }
 
 const EZIL_ID_DEFAULT = { issuer: EZIL_ID_ISSUER, clientId: "Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx", scope: "openid email profile" } as const;
+const identityConfig = CliConfigResponseSchema.shape.identity.unwrap();
+const LoginConfigSchema = CliConfigResponseSchema.extend({
+	identity: identityConfig.extend({
+		issuer: identityConfig.shape.issuer.default(EZIL_ID_DEFAULT.issuer),
+		clientId: identityConfig.shape.clientId.default(EZIL_ID_DEFAULT.clientId),
+		scope: identityConfig.shape.scope.default(EZIL_ID_DEFAULT.scope),
+	}).nullable(),
+});
 
 export async function login(io: Io, setup: readonly SetupStep[] = [], options: { legacy?: boolean } = {}): Promise<number> {
 	const origin = apiOriginOf(io.env);
-	let identity: ReturnType<typeof CliConfigResponseSchema.parse>["identity"] = options.legacy ? null : EZIL_ID_DEFAULT;
+	let identity: ReturnType<typeof CliConfigResponseSchema.parse>["identity"] = null;
 	if (!options.legacy) {
 		try {
-			const config = CliConfigResponseSchema.safeParse(await api(io, origin, "/cli/config"));
+			const config = LoginConfigSchema.safeParse(await api(io, origin, "/cli/config"));
 			if (!config.success) { io.err("EZiL returned an invalid sign-in configuration."); return 1; }
 			identity = config.data.identity;
 		} catch (error) {
-			if (!(error instanceof ApiError && (error.status === 404 || (error.status === 0 && error.code === "network")))) throw error;
+			if (error instanceof ApiError && error.status === 0 && error.code === "network") {
+				io.err("Could not reach EZiL. Check your connection and try again.");
+				return 1;
+			}
+			// An API without config cannot exchange EZiL ID tokens; use its device code directly.
+			if (!(error instanceof ApiError && error.status === 404)) throw error;
 		}
 	}
 	const os = (["darwin", "linux", "win32", "freebsd"] as const).find(p => p === platform()) ?? "other";
