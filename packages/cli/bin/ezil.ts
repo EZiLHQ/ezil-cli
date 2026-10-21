@@ -29,6 +29,7 @@ import {
 import pkg from "../package.json" with { type: "json" };
 import { login, logout, sessions, whoami } from "../src/core/auth";
 import type { Io } from "../src/core/session";
+import { clone } from "../src/modules/git/clone";
 import { gitCredential, gitSetup } from "../src/modules/git/credential";
 
 /** Read the whole of stdin. Returns `{}` when there is nothing on it. */
@@ -88,9 +89,13 @@ const USAGE = `ezil -- the EZiL command line (modules: git, sessions)
   ezil auth login | logout | status | sessions [revoke <id>]
       Sign this device in to EZiL (a code you approve in the browser) and set
       git up for github.ezil.work. After that, plain \`git clone\` / \`git push\`.
+      Use \`ezil auth login --legacy\` to force the original EZiL device flow.
 
   ezil whoami
       Who you are signed in as, and the repositories you can clone.
+
+  ezil clone [repository]
+      Clone your only repository, or select one by its route or project name.
 
   ezil --version
       The installed version.
@@ -210,11 +215,19 @@ async function main(): Promise<number> {
 		for await (const chunk of process.stdin) chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : new Uint8Array(chunk));
 		return gitCredential(realIo(), argv[1] ?? "", new TextDecoder().decode(Buffer.concat(chunks)));
 	}
+	if (command === "clone") {
+		if (argv.length > 2) { process.stderr.write("Usage: ezil clone [repository]\n"); return 2; }
+		try { return await clone(realIo(), argv[1]); }
+		catch (error: unknown) {
+			process.stderr.write(`${error instanceof Error ? error.message : "ezil clone failed."}\n`);
+			return 1;
+		}
+	}
 	if (command === "auth" || command === "whoami") {
 		const io = realIo();
 		const sub = command === "whoami" ? "status" : argv[1];
 		try {
-			if (sub === "login") return await login(io, [gitSetup()]);
+			if (sub === "login") return await login(io, [gitSetup()], { legacy: argv.includes("--legacy") });
 			if (sub === "logout") return await logout(io);
 			if (sub === "status") return await whoami(io);
 			if (sub === "sessions") return await sessions(io, argv[2] === "revoke" ? argv[3] : undefined);

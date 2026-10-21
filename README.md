@@ -14,10 +14,18 @@ The standalone installers choose the binary for your OS and CPU, check its SHA-2
 
 `npx @ezilhq/cli …` works for one-off commands. But the Git credential helper and the session hooks run `ezil` by name, so install it to keep `ezil` on your `PATH`.
 
+## One-line start (macOS and Linux)
+
+```sh
+curl -fsSL https://github.ezil.work/start.sh | sh -s -- [repository]
+```
+
+Replace `[repository]` with a repository route name or project name (quote names with spaces), or omit it if you have exactly one repository. This installs the checksum-verified CLI, asks you to approve a code in your browser, and clones the repository without reading stdin interactively. Keep the install directory on your PATH for later Git operations.
+
 ## Quick start
 
 ```sh
-ezil auth login          # shows a code; approve it at app.ezil.work/cli/approve
+ezil auth login          # shows a code; approve it in your browser
 ezil whoami              # who you are, and the repositories you can clone
 git clone https://github.ezil.work/<namespace>/<repo>.git
 cd <repo> && git commit -am "…" && git push
@@ -25,6 +33,8 @@ ezil auth logout         # revokes this device; the next git operation is refuse
 ```
 
 Other commands:
+- `ezil clone [repository]`: clone your only repository, or select one by route or project name.
+- `ezil auth login --legacy`: force the original EZiL device-code sign-in.
 - `ezil auth status`: same as `ezil whoami`.
 - `ezil auth sessions [revoke <id>]`: list your signed-in devices, or revoke one.
 - `ezil connect | hook | flush`: session evidence for EZiL Works. See [packages/cli/README.md](packages/cli/README.md).

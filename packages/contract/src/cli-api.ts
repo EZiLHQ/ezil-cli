@@ -38,9 +38,31 @@ export const DescribeLoginResponseSchema = z.object({
 
 export const ApproveLoginResponseSchema = z.object({ approved: z.literal(true), device: z.string() });
 
+export const EZIL_ID_ISSUER = "https://id.ezil.work/";
+export const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
+export const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
+
+/** `GET /cli/config`: how this API wants the CLI to sign in. `identity: null` = use the EZiL device code. */
+export const CliConfigResponseSchema = z.object({
+	identity: z.object({
+		issuer: z.literal(EZIL_ID_ISSUER),
+		clientId: z.string().min(1).max(128),
+		audience: z.string().min(1).max(256),
+		scope: z.string().min(1).max(256),
+	}).nullable(),
+});
+
 export const TokenRequestSchema = z.discriminatedUnion("grant_type", [
 	z.object({ grant_type: z.literal("device_code"), device_code: z.string().regex(/^ecd_[0-9a-f]{64}$/) }).strict(),
 	z.object({ grant_type: z.literal("refresh_token"), refresh_token: z.string().max(200) }).strict(),
+	z.object({
+		grant_type: z.literal(TOKEN_EXCHANGE_GRANT),
+		subject_token: z.string().min(16).max(8192),
+		subject_token_type: z.literal(ACCESS_TOKEN_TYPE),
+		deviceLabel: z.string().trim().min(1).max(80),
+		os: z.enum(CLI_OS),
+		cliVersion: z.string().regex(/^[0-9A-Za-z.+-]{1,32}$/),
+	}).strict(),
 ]);
 
 export const TokenResponseSchema = z.object({

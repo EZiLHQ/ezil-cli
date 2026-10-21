@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import { createHmac } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { GitAnnotateRequestSchema, GitAuthorizeRequestSchema, type GitAuthorizeResponse } from "@ezil/cli-contract/git-gateway";
 import { handle, type GatewayDeps, type GatewayEnv } from "./gateway";
 import { parseCommands } from "./pkt-line";
+import { INSTALL_SH } from "./install";
 
 const SECRET = "s".repeat(48);
 const env: GatewayEnv = { API_ORIGIN: "https://api.test", GIT_GATEWAY_SECRET: SECRET, IP_HASH_SALT: "salt" };
@@ -212,6 +214,23 @@ describe("downloads (installers and release redirects)", () => {
 			expect(response.status).toBe(200);
 			expect(await response.text()).toContain(marker);
 		}
+	});
+	it("serves start.sh with installer headers, shared installation, login, clone and valid POSIX syntax", async () => {
+		const h = harness();
+		const response = await h.send("/start.sh");
+		expect(response.status).toBe(200);
+		expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+		expect(response.headers.get("cache-control")).toBe("public, max-age=300");
+		const script = await response.text();
+		expect(script.startsWith(INSTALL_SH)).toBe(true);
+		expect(script).toContain("ezil auth login </dev/null");
+		expect(script).toContain('ezil clone "$1" </dev/null');
+		expect(script).toContain("ezil clone </dev/null");
+		const syntax = spawnSync("sh", ["-n"], { input: script, encoding: "utf8" });
+		expect(syntax.stderr).toBe("");
+		expect(syntax.status).toBe(0);
+		expect(h.api).toEqual([]);
+		expect(h.up).toEqual([]);
 	});
 	it("answers the latest version from the release page's redirect, and 503 when it cannot", async () => {
 		const asked: string[] = [];

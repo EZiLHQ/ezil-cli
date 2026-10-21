@@ -1,6 +1,6 @@
 import { GIT_DENY_MESSAGES, GIT_GRANT_PATTERN, GitAuthorizeResponseSchema, parseGitRoutePath, type GitAuthorizeAllow,
 	type GitAuthorizeRequest, type GitService } from "@ezil/cli-contract/git-gateway";
-import { INSTALL_PS1, INSTALL_SH } from "./install";
+import { INSTALL_PS1, INSTALL_SH, START_SH } from "./install";
 import { splitReceivePack } from "./pkt-line";
 import { sha256Hex, signedHeaders } from "./sign";
 
@@ -52,6 +52,7 @@ export const DEFAULT_RELEASES_ORIGIN = "https://github.com/EZiLHQ/ezil-cli/relea
 async function download(pathname: string, env: GatewayEnv, deps: GatewayDeps): Promise<Response | null> {
 	const script = (body: string) => new Response(body, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "public, max-age=300" } });
 	if (pathname === "/install.sh") return script(INSTALL_SH);
+	if (pathname === "/start.sh") return script(START_SH);
 	if (pathname === "/install.ps1") return script(INSTALL_PS1);
 	const origin = (env.RELEASES_ORIGIN ?? DEFAULT_RELEASES_ORIGIN).replace(/\/+$/, "");
 	if (pathname === "/cli/latest") {
