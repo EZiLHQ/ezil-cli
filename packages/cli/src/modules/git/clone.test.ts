@@ -26,20 +26,33 @@ describe("ezil clone", () => {
 		expect(h.ran).toEqual([["git", "clone", acme.cloneUrl]]);
 		expect(h.out).toEqual(["Cloned into website.", "Next: cd website && git push"]);
 	});
-	for (const name of ["WEBSITE", "aCmE wEbSiTe"]) {
+	for (const name of ["WEBSITE", "website.git", "WEBSITE.GiT", "aCmE wEbSiTe"]) {
 		it(`matches ${name} case-insensitively by route or project name`, async () => {
 			const h = signedIn([acme, other]);
 			expect(await clone(h.io, name)).toBe(0);
 			expect(h.ran).toEqual([["git", "clone", acme.cloneUrl]]);
 		});
 	}
-	for (const name of [undefined, "website", "Acme Website", "missing"]) {
+	for (const name of ["acme-3f9a1c/website", "AcMe-3F9A1C/WeBsItE", "acme-3f9a1c/website.git", "ACME-3F9A1C/WEBSITE.GiT"]) {
+		it(`matches the full path ${name} even when route and project names are ambiguous`, async () => {
+			const duplicate = repo("other-2", "website", "Acme Website");
+			const h = signedIn([duplicate, acme, other]);
+			expect(await clone(h.io, name)).toBe(0);
+			expect(h.ran).toEqual([["git", "clone", acme.cloneUrl]]);
+			expect(h.out).toEqual(["Cloned into website.", "Next: cd website && git push"]);
+		});
+	}
+	for (const name of [undefined, "website", "Acme Website", "missing", "missing/website", "other-2/mobile"]) {
 		it(`lists repositories and exits 2 for ${name ?? "no argument"} without a unique match`, async () => {
 			const duplicate = repo("other-2", "website", "Acme Website");
 			const h = signedIn([acme, duplicate, other]);
 			expect(await clone(h.io, name)).toBe(2);
 			expect(h.ran).toEqual([]);
-			for (const r of [acme, duplicate, other]) expect(h.out.join("\n")).toContain(r.cloneUrl);
+			expect(h.out).toEqual([
+				`  acme-3f9a1c/website  (Acme Website)  ${acme.cloneUrl}`,
+				`  other-2/website  (Acme Website)  ${duplicate.cloneUrl}`,
+				`  other-1/mobile  (Other App)  ${other.cloneUrl}`,
+			]);
 		});
 	}
 	it("lists an empty account without prompting", async () => {

@@ -9,13 +9,15 @@ export async function clone(io: Io, repository?: string): Promise<number> {
 	const parsed = WhoamiResponseSchema.safeParse(await api(io, apiOriginOf(io.env), "/cli/whoami", { token: live.token }));
 	if (!parsed.success) { io.err("EZiL returned an invalid repository list."); return 1; }
 	const repositories = parsed.data.repositories;
-	const routeName = (url: string) => new URL(url).pathname.split("/")[2]!.slice(0, -4);
-	const name = repository?.toLowerCase();
-	const matches = name === undefined ? repositories : repositories.filter(r => routeName(r.cloneUrl).toLowerCase() === name || r.project.toLowerCase() === name);
+	const routePath = (url: string) => new URL(url).pathname.slice(1, -4);
+	const routeName = (url: string) => routePath(url).split("/")[1]!;
+	const name = repository?.toLowerCase().replace(/\.git$/, "");
+	const matches = name === undefined ? repositories : repositories.filter(r =>
+		routePath(r.cloneUrl).toLowerCase() === name || routeName(r.cloneUrl).toLowerCase() === name || r.project.toLowerCase() === name);
 	if (matches.length !== 1) {
 		io.err(matches.length > 1 ? "Choose one repository with `ezil clone <repository>`." : "No matching repository. Available repositories:");
 		if (repositories.length === 0) io.out("No repositories yet.");
-		for (const r of repositories) io.out(`  ${routeName(r.cloneUrl)}  (${r.project})  ${r.cloneUrl}`);
+		for (const r of repositories) io.out(`  ${routePath(r.cloneUrl)}  (${r.project})  ${r.cloneUrl}`);
 		return 2;
 	}
 	const selected = matches[0]!;

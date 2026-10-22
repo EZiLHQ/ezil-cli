@@ -232,6 +232,22 @@ describe("downloads (installers and release redirects)", () => {
 		expect(h.api).toEqual([]);
 		expect(h.up).toEqual([]);
 	});
+	it("passes start.sh repository arguments unchanged as one quoted argument", async () => {
+		const script = await (await get("/start.sh")).text();
+		// Stub the CLI and skip the shared download/install portion; exercise the actual POSIX shell forwarding.
+		const input = `DIR=/usr/bin
+ezil() { printf '%s\\0' "$#" "$@"; }
+${script.slice(INSTALL_SH.length)}`;
+		for (const args of [[], ["owner/repo"], ["Owner/Repo.GiT"], [""],
+			["owner/repo with spaces * ? [ab] '$HOME' \"quoted\" $(printf expanded) `printf expanded`; printf expanded"]]) {
+			const result = spawnSync("sh", ["-s", "--", ...args], {
+				input, encoding: "utf8", env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" },
+			});
+			expect(result.stderr).toBe("");
+			expect(result.status).toBe(0);
+			expect(result.stdout.split("\0")).toEqual(["2", "auth", "login", String(1 + args.length), "clone", ...args, ""]);
+		}
+	});
 	it("answers the latest version from the release page's redirect, and 503 when it cannot", async () => {
 		const asked: string[] = [];
 		const github: GatewayDeps["fetch"] = async (input) => { asked.push(String(input));

@@ -44,7 +44,7 @@ echo "Next:   ezil auth login"
 
 /** Reuse the checksum-verified installer, then sign in and clone without consuming the piped script. */
 export const START_SH = `${INSTALL_SH}
-# curl -fsSL https://github.ezil.work/start.sh | sh -s -- [repository]
+# curl -fsSL https://github.ezil.work/start.sh | sh -s -- [owner/repo]
 PATH="$DIR:$PATH"
 export PATH
 ezil auth login </dev/null
