@@ -62,7 +62,7 @@ bun run check
 bash ops/build-private-cli.sh /absolute/new/private-artifact-directory
 cd /absolute/new/private-artifact-directory
 sha256sum -c SHA256SUMS
-npm install --ignore-scripts --no-audit --no-fund --prefix /private/os-cli-prefix ./ezilhq-cli-0.2.1-repo-url-open.20261026.3.tgz
+npm install --ignore-scripts --no-audit --no-fund --prefix /private/os-cli-prefix ./ezilhq-cli-0.2.1-repo-url-open.20261026.4.tgz
 /private/os-cli-prefix/node_modules/.bin/ezil --version
 ```
 
@@ -119,3 +119,32 @@ and is unchanged. No global settings are written. v3 validation is the affected 
 suite (39 tests) and CLI typecheck, plus private package build/install/auth-error
 smoke; the unrelated full suite was not repeated. v1/v2 artifacts are preserved.
 Independent exact-commit rereview is required before the OS lane adopts v3.
+
+## Cooperative timeout contract for v4
+
+Only CLI clone installs SIGTERM/SIGINT handlers, removed when it finishes. An abort
+signal cancels fetches (including auth refresh), lock waits and the Git transport.
+The transport signals its direct Git child and awaits close before cleanup; it does
+not create a new process group or run its own SIGKILL timer. Temp/socket roots and
+lock cleanup check the captured device/inode; replaced paths are preserved. The
+existing empty reservation check is retained. JSON success is unchanged. Cooperative
+cancellation returns exit 1 and the existing error envelope/code `clone-failed`,
+with message `Repository open cancelled.` It does not call process.exit early.
+
+OS must launch each CLI operation in its own detached process group. On timeout,
+SIGTERM only that operation group, allow bounded cleanup grace, then SIGKILL only
+proven remaining descendants if needed and await termination. Do not signal a
+shared terminal group or kill only the CLI parent. Git/helpers stay in the OS-owned
+group. After SIGKILL, OS reports `recovery-required`: no success/JSON is expected from
+a killed process. Leave uncertain locks, temp data and destinations untouched until
+an operator verifies ownership and no live operation. No journal, stale-lock stealing,
+or automatic cleanup by later opens is implemented. CLI `destination-busy` explains
+the recovery requirement when a destination remains locked after a forced stop.
+
+Targeted validation: 44 Git tests and CLI typecheck. Process tests verify both
+SIGTERM/SIGINT group cancellation, descendant exit before normal cleanup, successful
+retry, an aborted in-flight grant, and preserved state after forced group SIGKILL
+and cancelled retry. A separate test replaces lock/temp paths during the operation
+and verifies cleanup preserves those unknown replacements. No unrelated full suite
+was repeated. Private v1-v3 artifacts remain receipts; v4 requires independent
+exact-commit cancellation and OS process-group integration rereview. No deployment.

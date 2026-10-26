@@ -1,20 +1,22 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitGrantResponseSchema } from "@ezil/cli-contract/cli-api";
 
 export type CloneGrant = ReturnType<typeof GitGrantResponseSchema.parse>;
-export type CloneTransport = (url: string, destination: string, grant: CloneGrant) => Promise<number>;
+export type CloneTransport = (url: string, destination: string, grant: CloneGrant, signal?: AbortSignal) => Promise<number>;
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 // This helper contains no credentials. Its private socket is an ephemeral operation handle.
 const helper = `if(process.argv[2]!=='get'){process.stdin.resume();}else{const net=require('node:net');let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const s=net.connect(process.argv[1]);s.on('connect',()=>s.end(input));s.on('data',c=>process.stdout.write(c));s.on('error',()=>{process.exitCode=1});});}`;
 
 /** A memory-only grant from the same token as whoami; never reload the mutable session store. */
-export const cloneWithGrant: CloneTransport = async (url, destination, grant) => {
+export const cloneWithGrant: CloneTransport = async (url, destination, grant, signal) => {
+	signal?.throwIfAborted();
 	const root = mkdtempSync(join(tmpdir(), "ezil-grant-")); // 0700, no secret file
+	const ownedRoot = lstatSync(root);
 	const socketPath = join(root, "credential.sock");
 	const sockets = new Set<Socket>();
 	const server = createServer({ allowHalfOpen: true }, socket => {
@@ -39,6 +41,7 @@ export const cloneWithGrant: CloneTransport = async (url, destination, grant) =>
 		// must not substitute a different transport/identity for this pinned grant.
 		const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
 			!key.startsWith("GIT_CONFIG") && !key.startsWith("GIT_TRACE") && !["GIT_CURL_VERBOSE", "GIT_TEMPLATE_DIR", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_ASKPASS"].includes(key)));
+		signal?.throwIfAborted();
 		const command = `!${quote(process.versions.bun ? "node" : process.execPath)} -e ${quote(helper)} ${quote(socketPath)}`;
 		return await new Promise<number>(resolve => {
 			const child = spawn("git", [
@@ -49,12 +52,23 @@ export const cloneWithGrant: CloneTransport = async (url, destination, grant) =>
 				"-c", "core.hooksPath=/dev/null",
 				"clone", "--template=", "--", url, destination,
 			], { cwd: root, env: { ...env, HOME: root, XDG_CONFIG_HOME: root, CURL_HOME: root, NETRC: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_COUNT: "0", GIT_TERMINAL_PROMPT: "0" }, stdio: "ignore" });
-			child.once("error", () => resolve(127));
-			child.once("close", code => resolve(code ?? 1));
+			// No detached subgroup: OS owns the complete operation process group.
+			// Await close even after cancellation, so cleanup cannot race a live Git child.
+			const cancel = () => { child.kill("SIGTERM"); };
+			signal?.addEventListener("abort", cancel, { once: true });
+			if (signal?.aborted) cancel();
+			child.once("error", () => { /* close follows spawn errors too */ });
+			child.once("close", code => {
+				signal?.removeEventListener("abort", cancel);
+				resolve(code ?? 1);
+			});
 		});
 	} finally {
 		for (const socket of sockets) socket.destroy();
 		await new Promise<void>(resolve => server.close(() => resolve()));
-		rmSync(root, { recursive: true, force: true });
+		try {
+			const stat = lstatSync(root);
+			if (!stat.isSymbolicLink() && stat.dev === ownedRoot.dev && stat.ino === ownedRoot.ino) rmSync(root, { recursive: true, force: true });
+		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 	}
 };

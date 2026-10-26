@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { io, memoryStore, session, useTempHome } from "../../core/testing";
 import { canonicalRepository, clone as actualClone, type CloneOptions } from "./clone";
 
@@ -168,4 +168,18 @@ describe("operation authorization", () => {
 		}) as typeof fetch };
 		expect(await clone(h.io, acme.cloneUrl, options(folder))).toBe(1); expect(errorCode(h)).toBe("auth-required"); expect(h.ran).toEqual([]);
 	});
+});
+
+it("cleanup preserves lock/temp paths replaced by an unrelated operation", async () => {
+	const folder = destination(), h = signedIn();
+	let replacedTemp = "";
+	const lock = join(dirname(folder), ".checkout.ezil-clone-lock");
+	expect(await actualClone(h.io, acme.cloneUrl, options(folder), async (_url, target) => {
+		renameSync(lock, `${lock}.original`); mkdirSync(lock); writeFileSync(join(lock, "unknown"), "keep");
+		replacedTemp = dirname(target);
+		renameSync(replacedTemp, `${replacedTemp}.original`); mkdirSync(replacedTemp); writeFileSync(join(replacedTemp, "unknown"), "keep");
+		return 1;
+	})).toBe(1);
+	expect(readFileSync(join(lock, "unknown"), "utf8")).toBe("keep");
+	expect(readFileSync(join(replacedTemp, "unknown"), "utf8")).toBe("keep");
 });

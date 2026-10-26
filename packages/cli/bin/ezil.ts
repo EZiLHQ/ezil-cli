@@ -30,6 +30,7 @@ import pkg from "../package.json" with { type: "json" };
 import { login, logout, sessions, whoami } from "../src/core/auth";
 import type { Io } from "../src/core/session";
 import { clone } from "../src/modules/git/clone";
+import { withCloneSignals } from "../src/modules/git/clone-cancellation";
 import { gitCredential, gitSetup } from "../src/modules/git/credential";
 
 /** Read the whole of stdin. Returns `{}` when there is nothing on it. */
@@ -236,7 +237,7 @@ async function main(): Promise<number> {
 			else process.stderr.write(message + "\n");
 			return 2;
 		}
-		return clone(realIo(), repository, { json, ...(directory === undefined ? {} : { directory }) });
+		return withCloneSignals(signal => clone(realIo(), repository, { json, signal, ...(directory === undefined ? {} : { directory }) }));
 	}
 	if (command === "auth" || command === "whoami") {
 		const io = realIo();
