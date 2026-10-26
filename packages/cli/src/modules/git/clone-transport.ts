@@ -38,7 +38,7 @@ export const cloneWithGrant: CloneTransport = async (url, destination, grant) =>
 		// Ignore inherited Git config/working-tree selectors: URL rewrites or auth headers
 		// must not substitute a different transport/identity for this pinned grant.
 		const env = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
-			!key.startsWith("GIT_CONFIG") && !key.startsWith("GIT_TRACE") && !["GIT_CURL_VERBOSE","GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_ASKPASS"].includes(key)));
+			!key.startsWith("GIT_CONFIG") && !key.startsWith("GIT_TRACE") && !["GIT_CURL_VERBOSE", "GIT_TEMPLATE_DIR", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_ASKPASS"].includes(key)));
 		const command = `!${quote(process.versions.bun ? "node" : process.execPath)} -e ${quote(helper)} ${quote(socketPath)}`;
 		return await new Promise<number>(resolve => {
 			const child = spawn("git", [
@@ -46,8 +46,9 @@ export const cloneWithGrant: CloneTransport = async (url, destination, grant) =>
 				"-c", `credential.https://github.ezil.work.helper=${command}`,
 				"-c", "credential.useHttpPath=true", "-c", "credential.interactive=false",
 				"-c", "http.extraHeader=", "-c", "http.followRedirects=false",
-				"clone", "--", url, destination,
-			], { cwd: root, env: { ...env, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_COUNT: "0", GIT_TERMINAL_PROMPT: "0" }, stdio: "ignore" });
+				"-c", "core.hooksPath=/dev/null",
+				"clone", "--template=", "--", url, destination,
+			], { cwd: root, env: { ...env, HOME: root, XDG_CONFIG_HOME: root, CURL_HOME: root, NETRC: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_COUNT: "0", GIT_TERMINAL_PROMPT: "0" }, stdio: "ignore" });
 			child.once("error", () => resolve(127));
 			child.once("close", code => resolve(code ?? 1));
 		});

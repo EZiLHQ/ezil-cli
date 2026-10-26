@@ -62,7 +62,7 @@ bun run check
 bash ops/build-private-cli.sh /absolute/new/private-artifact-directory
 cd /absolute/new/private-artifact-directory
 sha256sum -c SHA256SUMS
-npm install --ignore-scripts --no-audit --no-fund --prefix /private/os-cli-prefix ./ezilhq-cli-0.2.1-repo-url-open.20261026.2.tgz
+npm install --ignore-scripts --no-audit --no-fund --prefix /private/os-cli-prefix ./ezilhq-cli-0.2.1-repo-url-open.20261026.3.tgz
 /private/os-cli-prefix/node_modules/.bin/ezil --version
 ```
 
@@ -101,3 +101,21 @@ final validation. The earlier Promise.all test is retained only as a basic regre
 The v1 artifact is preserved. v2 needs independent exact-commit rereview before
 staging adoption. No credential permissions, persistent configuration, production
 release, or other repository changes were made.
+
+## Review correction for v3
+
+The inherited HOME/netrc and Git template finding was accepted and reproduced with
+real Git, local HTTP Basic authentication, and synthetic credentials. Baseline Git
+attempted account B's HOME/.netrc credentials; an inherited GIT_TEMPLATE_DIR copied
+injected configuration and executed its post-checkout hook. The regression then
+runs real Git with the scoped transport's child environment and verifies no B
+credentials, template config, or hook reach the clone. No production endpoint or
+real credentials are involved.
+
+Only the Git child receives an operation-owned HOME, XDG_CONFIG_HOME and CURL_HOME,
+plus NETRC=/dev/null. GIT_TEMPLATE_DIR is removed; clone uses --template= and
+core.hooksPath=/dev/null. CLI auth/session lookup still happens before this isolation
+and is unchanged. No global settings are written. v3 validation is the affected Git
+suite (39 tests) and CLI typecheck, plus private package build/install/auth-error
+smoke; the unrelated full suite was not repeated. v1/v2 artifacts are preserved.
+Independent exact-commit rereview is required before the OS lane adopts v3.
