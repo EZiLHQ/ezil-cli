@@ -6,7 +6,7 @@ import { join } from "node:path";
 import type { GitGrantResponseSchema } from "@ezil/cli-contract/cli-api";
 
 export type CloneGrant = ReturnType<typeof GitGrantResponseSchema.parse>;
-export type CloneTransport = (url: string, destination: string, grant: CloneGrant, signal?: AbortSignal) => Promise<number>;
+export type CloneTransport = (url: string, destination: string, grant: CloneGrant, signal?: AbortSignal, authoritativeRef?: string) => Promise<number>;
 export const CLONE_GIT_TERM_GRACE_MS = 500;
 export class CloneRecoveryRequired extends Error {
 	constructor() { super("Repository open interrupted; recovery required after forced Git termination."); }
@@ -17,7 +17,7 @@ const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const helper = `if(process.argv[2]!=='get'){process.stdin.resume();}else{const net=require('node:net');let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const s=net.connect(process.argv[1]);s.on('connect',()=>s.end(input));s.on('data',c=>process.stdout.write(c));s.on('error',()=>{process.exitCode=1});});}`;
 
 /** A memory-only grant from the same token as whoami; never reload the mutable session store. */
-export const cloneWithGrant: CloneTransport = async (url, destination, grant, signal) => {
+export const cloneWithGrant: CloneTransport = async (url, destination, grant, signal, authoritativeRef) => {
 	signal?.throwIfAborted();
 	const root = mkdtempSync(join(tmpdir(), "ezil-grant-")); // 0700, no secret file
 	const ownedRoot = lstatSync(root);
@@ -55,7 +55,7 @@ export const cloneWithGrant: CloneTransport = async (url, destination, grant, si
 				"-c", "credential.useHttpPath=true", "-c", "credential.interactive=false",
 				"-c", "http.extraHeader=", "-c", "http.followRedirects=false",
 				"-c", "core.hooksPath=/dev/null",
-				"clone", "--template=", "--", url, destination,
+				"clone", "--template=", ...(authoritativeRef ? ["--no-tags", "--single-branch", `--branch=${authoritativeRef.slice("refs/heads/".length)}`] : []), "--", url, destination,
 			], { cwd: root, env: { ...env, HOME: root, XDG_CONFIG_HOME: root, CURL_HOME: root, NETRC: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_COUNT: "0", GIT_TERMINAL_PROMPT: "0" }, stdio: "ignore" });
 			// No detached subgroup: OS owns the complete operation process group.
 			// Await close even after cancellation, so cleanup cannot race a live Git child.

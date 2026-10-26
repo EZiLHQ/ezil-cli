@@ -33,6 +33,6 @@ export function validatePrivateGrant(value: any, canonicalUrl: string, now = Dat
         || typeof value.git.token !== 'string' || !/^egg_[A-Za-z0-9._~-]+$/.test(value.git.token) || value.git.token.length > 8192
         || typeof value.git.expiresAt !== 'string' || !Number.isFinite(Date.parse(value.git.expiresAt))
         || Date.parse(value.git.expiresAt) <= now || Date.parse(value.git.expiresAt) > now + 300000) throw new Error('invalid private grant');
-    return { identity: value.identity as {issuer: string; subject: string},
+    return { ref: value.binding.ref as string, identity: value.identity as {issuer: string; subject: string},
         grant: { username: 'ezil' as const, scope: 'read' as const, password: value.git.token as string, password_expiry_utc: Math.floor(Date.parse(value.git.expiresAt) / 1000) } };
 }

@@ -47,7 +47,20 @@ function safeFolder(folder: string): void {
 	}
 }
 
-async function openRepository(io: Io, canonicalUrl: string, folder: string, authorize: () => Promise<CloneGrant>, transport: CloneTransport, signal?: AbortSignal): Promise<"cloned" | "reused"> {
+/** A ref mismatch never changes a checkout, including dirty files or local commits. */
+function verifyCheckoutRef(io: Io, folder: string, ref: string, fresh: boolean): void {
+    const head = io.run(["git", "-C", folder, "symbolic-ref", "--quiet", "HEAD"]);
+    if (head.code !== 0 || head.stdout.trim() !== ref) fail("repository-ref-mismatch", "Checkout does not match the authorized branch. Existing files were preserved.", 2);
+    if (fresh) {
+        const local = io.run(["git", "-C", folder, "rev-parse", "--verify", `${ref}^{commit}`]);
+        const remote = io.run(["git", "-C", folder, "rev-parse", "--verify", `refs/remotes/origin/${ref.slice("refs/heads/".length)}^{commit}`]);
+        if (local.code !== 0 || remote.code !== 0 || !local.stdout.trim() || local.stdout.trim() !== remote.stdout.trim()) {
+            fail("repository-ref-mismatch", "Clone does not match the authorized branch.", 2);
+        }
+    }
+}
+
+async function openRepository(io: Io, canonicalUrl: string, folder: string, authorize: () => Promise<CloneGrant>, transport: CloneTransport, signal?: AbortSignal, authoritativeRef?: string): Promise<"cloned" | "reused"> {
 	safeFolder(folder);
 	const lock = join(dirname(folder), `.${basename(folder)}.ezil-clone-lock`);
 	const deadline = Date.now() + 30_000;
@@ -80,6 +93,7 @@ async function openRepository(io: Io, canonicalUrl: string, folder: string, auth
 				fail("destination-conflict", "Destination is not a matching checkout.");
 			}
 			await authorize();
+            if (authoritativeRef) verifyCheckoutRef(io, folder, authoritativeRef, false);
 			signal?.throwIfAborted();
 			return "reused";
 		}
@@ -87,9 +101,10 @@ async function openRepository(io: Io, canonicalUrl: string, folder: string, auth
 		ownedTemporary = lstatSync(temporary);
 		const checkout = join(temporary, "checkout");
 		const grant = await authorize();
-		const code = await transport(canonicalUrl, checkout, grant, signal);
+		const code = await transport(canonicalUrl, checkout, grant, signal, authoritativeRef);
 		signal?.throwIfAborted();
 		if (code !== 0) fail("clone-failed", "Could not clone the repository. Check Git and your repository access, then try again.");
+		if (authoritativeRef) verifyCheckoutRef(io, checkout, authoritativeRef, true);
 		safeFolder(folder);
 		// Exclusive reservation prevents replacing a destination created during the clone.
 		try { mkdirSync(folder, { mode: 0o700 }); } catch { fail("destination-conflict", "Destination appeared during clone; nothing was replaced."); }
@@ -142,7 +157,7 @@ export async function clone(io: Io, repository?: string, options: CloneOptions =
                 catch { fail("repository-not-authorized", "Invalid or expired repository grant.", 2); }
             };
             const folder = resolve(options.directory);
-            const status = await openRepository(io, url, folder, authorize, transport, signal);
+            const status = await openRepository(io, url, folder, authorize, transport, signal, validatePrivateGrant(packet, url).ref);
             const { identity } = validatePrivateGrant(packet, url);
             io.out(JSON.stringify({ canonicalUrl: url, folder, identity, status }));
             return 0;
