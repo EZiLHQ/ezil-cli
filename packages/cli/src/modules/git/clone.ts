@@ -7,7 +7,9 @@ import { accessToken, api, ApiError, apiOriginOf, type Io } from "../../core/ses
 
 import { CloneRecoveryRequired, cloneWithGrant, type CloneTransport, type CloneGrant } from "./clone-transport";
 
-export interface CloneOptions { directory?: string; json?: boolean; signal?: AbortSignal }
+import { readPrivateGrant, validatePrivateGrant } from "./private-grant";
+
+export interface CloneOptions { grantFd?: number; directory?: string; json?: boolean; signal?: AbortSignal }
 class CloneError extends Error {
 	readonly code: string;
 	readonly exit: number;
@@ -129,6 +131,22 @@ export async function clone(io: Io, repository?: string, options: CloneOptions =
 		if (options.directory !== undefined && (!isAbsolute(options.directory) || options.directory.includes("\0") || options.directory.split(/[\\/]/).includes("..") || resolve(options.directory) === parse(options.directory).root)) {
 			fail("invalid-directory", "Directory must be an absolute destination without traversal.", 2);
 		}
+        if (options.grantFd !== undefined) {
+            if (!url || !options.directory || !options.json) fail("invalid-arguments", "Private grants require a canonical URL, absolute directory and JSON output.", 2);
+            let packet: unknown;
+            try { packet = await readPrivateGrant(options.grantFd, signal); validatePrivateGrant(packet, url); }
+            catch { fail("repository-not-authorized", "Invalid or expired repository grant.", 2); }
+            const authorize = async (): Promise<CloneGrant> => {
+                signal?.throwIfAborted();
+                try { return validatePrivateGrant(packet, url).grant; }
+                catch { fail("repository-not-authorized", "Invalid or expired repository grant.", 2); }
+            };
+            const folder = resolve(options.directory);
+            const status = await openRepository(io, url, folder, authorize, transport, signal);
+            const { identity } = validatePrivateGrant(packet, url);
+            io.out(JSON.stringify({ canonicalUrl: url, folder, identity, status }));
+            return 0;
+        }
 		const live = await accessToken(io);
 		if (!live) fail("auth-required", "Not signed in. Run `ezil auth login`.");
 		signal?.throwIfAborted();

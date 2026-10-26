@@ -220,10 +220,12 @@ async function main(): Promise<number> {
 		const json = argv.includes("--json");
 		let repository: string | undefined;
 		let directory: string | undefined;
+        let grantFd: number | undefined;
 		let invalid = false;
 		for (let i = 1; i < argv.length; i++) {
 			const arg = argv[i]!;
 			if (arg === "--json") continue;
+            if (arg === "--grant-fd=3") { if (grantFd !== undefined) invalid = true; grantFd = 3; continue; }
 			if (arg === "--directory" || arg.startsWith("--directory=")) {
 				const value = arg === "--directory" ? argv[++i] : arg.slice(12);
 				if (directory !== undefined || !value || value.startsWith("--")) invalid = true;
@@ -237,7 +239,7 @@ async function main(): Promise<number> {
 			else process.stderr.write(message + "\n");
 			return 2;
 		}
-		return withCloneSignals(signal => clone(realIo(), repository, { json, signal, ...(directory === undefined ? {} : { directory }) }));
+		return withCloneSignals(signal => clone(realIo(), repository, { json, signal, ...(grantFd === undefined ? {} : { grantFd }), ...(directory === undefined ? {} : { directory }) }));
 	}
 	if (command === "auth" || command === "whoami") {
 		const io = realIo();
