@@ -4,9 +4,13 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { io, memoryStore, session, useTempHome } from "../../core/testing";
-import { canonicalRepository, clone } from "./clone";
+import { canonicalRepository, clone as actualClone, type CloneOptions } from "./clone";
 
 useTempHome();
+const grant = { username: "ezil", password: `egg_${"a".repeat(64)}`, password_expiry_utc: 4102444800, scope: "read" };
+function clone(value: Parameters<typeof actualClone>[0], repository?: string, options: CloneOptions = {}) {
+	return actualClone(value, repository, options, async (url, folder) => value.run(["git", "clone", "--", url, folder]).code);
+}
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 function destination() { const root = mkdtempSync(join(tmpdir(), "ezil-open-test-")); roots.push(root); return join(root, "checkout"); }
@@ -25,7 +29,9 @@ function checkout(folder: string, url = acme.cloneUrl) {
 }
 function signedIn(repositories = [acme]) {
 	const h = io((path, body, auth) => {
-		expect(path).toBe("/cli/whoami"); expect(body).toBeNull(); expect(auth).toBe("Bearer eca_a1");
+		expect(auth).toBe("Bearer eca_a1");
+		if (path === "/cli/git-grant") { expect(body?.["host"]).toBe("github.ezil.work"); return Response.json(grant); }
+		expect(path).toBe("/cli/whoami"); expect(body).toBeNull();
 		return Response.json({ account: { id: "a-1", email: "builder@test.example", role: "builder" }, session: { id: "12345678-1234-4234-8234-123456789abc", device: "laptop", os: "linux", expiresAt: "2030-01-01T00:00:00.000Z" }, repositories });
 	}, memoryStore(session()));
 	h.io = { ...h.io, run: cmd => {
@@ -119,5 +125,47 @@ describe("clone command dispatch", () => {
 	for (const args of [["--directory"], ["--directory=/tmp/a", "--directory=/tmp/b"], ["--upload-pack=evil"], ["extra"]]) it(`rejects malformed options ${args}`, () => {
 		const result = spawnSync(process.execPath, [join(import.meta.dir, "../../../bin/ezil.ts"), "clone", acme.cloneUrl, ...args, "--json"], { encoding: "utf8" });
 		expect(result.status).toBe(2); expect(JSON.parse(result.stdout).error.code).toBe("invalid-arguments"); expect(result.stderr).toBe("");
+	});
+});
+
+describe("operation authorization", () => {
+	it("refuses a listed checkout when the live grant is denied, preserving dirty state", async () => {
+		const folder = destination(); checkout(folder); writeFileSync(join(folder, "tracked"), "dirty");
+		const h = signedIn(), fetch = h.io.fetch;
+		h.io = { ...h.io, fetch: ((input, init) => String(input).endsWith("/cli/git-grant") ? Promise.resolve(Response.json({ error: "authority_lapsed" }, { status: 403 })) : fetch(input, init)) as typeof fetch };
+		expect(await clone(h.io, acme.cloneUrl, options(folder))).toBe(2);
+		expect(errorCode(h)).toBe("repository-not-authorized"); expect(readFileSync(join(folder, "tracked"), "utf8")).toBe("dirty");
+	});
+	it("pins the A token and grant even when the stored session becomes authorized account B", async () => {
+		const folder = destination(), h = signedIn(), fetch = h.io.fetch;
+		h.io = { ...h.io, fetch: (async (input, init) => {
+			if (String(input).endsWith("/cli/git-grant")) {
+				expect(h.store.value?.accessToken).toBe("eca_b2");
+				// Both identities can access this URL: a mutable lookup would silently succeed as B.
+				const isA = new Headers(init?.headers).get("authorization") === "Bearer eca_a1";
+				return Response.json({ ...grant, password: `egg_${(isA ? "a" : "b").repeat(64)}` });
+			}
+			const response = await fetch(input, init);
+			h.store.write(session({ sessionId: "session-b", accessToken: "eca_b2" }));
+			return response;
+		}) as typeof fetch };
+		let usedA = false;
+		expect(await actualClone(h.io, acme.cloneUrl, options(folder), async (url, target, credential) => {
+			usedA = credential.password === grant.password;
+			checkout(target, url); return 0;
+		})).toBe(0);
+		expect(usedA).toBe(true); expect(JSON.parse(h.out[0]!).accountId).toBe("a-1");
+		expect(h.out.join()).not.toContain(grant.password);
+	});
+	it("fails closed if A loses access after the stored session switches to authorized B", async () => {
+		const folder = destination(), h = signedIn(), fetch = h.io.fetch;
+		h.io = { ...h.io, fetch: (async (input, init) => {
+			if (String(input).endsWith("/cli/git-grant")) {
+				expect(new Headers(init?.headers).get("authorization")).toBe("Bearer eca_a1");
+				return Response.json({ error: "session_revoked" }, { status: 401 });
+			}
+			const response = await fetch(input, init); h.store.write(session({ accessToken: "eca_b2" })); return response;
+		}) as typeof fetch };
+		expect(await clone(h.io, acme.cloneUrl, options(folder))).toBe(1); expect(errorCode(h)).toBe("auth-required"); expect(h.ran).toEqual([]);
 	});
 });

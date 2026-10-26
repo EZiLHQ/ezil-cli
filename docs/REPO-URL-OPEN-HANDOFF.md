@@ -14,13 +14,24 @@ selection return exit 2. Filesystem/clone failure returns exit 1. Other stable c
 Only exact lowercase `https://github.ezil.work/<namespace>/<repo>.git` routes
 matching the existing gateway grammar are accepted. Names/project labels remain
 case-insensitive and must select one authorized repository. Every invocation checks
-`/cli/whoami` using the existing CLI session. Git clone still invokes stock Git and
-the configured credential helper, preserving live server repository grant checks.
+`/cli/whoami` using the existing CLI session. Both clone and reuse request a fresh `/cli/git-grant` using the exact access token
+captured for whoami. Clone invokes stock Git with an operation-scoped credential
+helper connected to a private Unix socket. The same token's validated grant remains
+in memory; no second session lookup occurs. No credentials are placed in argv,
+environment, files, diagnostics, or result JSON. Normal `ezil git-credential` behavior
+for other Git operations is unchanged. Expired grants fail closed without refresh;
+retry the operation. Redirects and inherited generic/host credential helpers are
+disabled for this clone. Clone runs outside any checkout with global/system/injected
+Git configuration disabled, preventing inherited URL rewrites or auth headers from
+substituting another identity. Custom global Git configuration is not applied to
+this scoped clone. The helper serves only the exact HTTPS repository path.
 Reuse requires an ordinary checkout with the exact origin and root; no fetch,
 pull, reset, checkout, or working tree writes occur. Linked worktrees are rejected.
 
 OS must create the account-owned absolute destination parent first, pass arguments
-as an argv array, and verify returned accountId against its authenticated context.
+as an argv array, and treat returned accountId as Works identity, not OS identity. OS owns destination
+mapping using OS account identity plus the full repository. Any relationship between
+Works and OS identity requires explicit verification, never an equality assumption.
 Do not infer cross-project login compatibility. Keep parent directories inaccessible
 to other users; symlink components are rejected, but pathname checks are not a
 sandbox against a hostile process that can rename the same user's parent directories.
@@ -40,7 +51,10 @@ repository. Tooling: Bun **1.3.14**, Node **22 or newer**, npm, Git, and bash.
 and needs npm registry access or a populated cache. No credentials are needed for
 the dependency install; do not run credential setup scripts. The tarball contains a
 bundled Node CLI with no runtime npm dependencies. The installed CLI requires Git;
-its existing login/session and helper setup must already be available in the OS.
+its existing login/session must be available in the OS. This private clone transport
+requires a POSIX Unix socket and Node on PATH when invoked from Bun/native builds;
+the Node npm bundle uses its own Node executable. The build is for Linux OS staging,
+not a claim of Windows transport support.
 
 ```sh
 bun install --frozen-lockfile
@@ -48,7 +62,7 @@ bun run check
 bash ops/build-private-cli.sh /absolute/new/private-artifact-directory
 cd /absolute/new/private-artifact-directory
 sha256sum -c SHA256SUMS
-npm install --ignore-scripts --no-audit --no-fund --prefix /private/os-cli-prefix ./ezilhq-cli-0.2.1-repo-url-open.20261026.1.tgz
+npm install --ignore-scripts --no-audit --no-fund --prefix /private/os-cli-prefix ./ezilhq-cli-0.2.1-repo-url-open.20261026.2.tgz
 /private/os-cli-prefix/node_modules/.bin/ezil --version
 ```
 
@@ -61,7 +75,7 @@ OS staging authorization/login/editor/restoration acceptance are still required.
 
 ## Local validation
 
-225 tests passed, including local synthetic Git gateway/install end-to-end tests;
+229 tests passed, including local synthetic Git gateway/install end-to-end tests;
 all four workspace typechecks passed under pinned Bun 1.3.14. New tests cover exact
 namespace selection, retained name selection, invalid URL/argv rejection, missing
 and revoked auth, dirty/detached/local-commit reuse, revoked membership, wrong origin,
@@ -69,3 +83,21 @@ non-checkout/symlink/path rejection, failed clone cleanup/retry, destination rac
 and concurrent opens. No live account identity, staging service or deployment was
 used by these tests. Independent review is pending; local results are not staging
 acceptance. Detailed Notion evidence is omitted under the current tracking boundary.
+
+## Review corrections for v2
+
+All three review findings were accepted. Reuse now requires a live grant after
+acquiring the destination lock. Whoami and grant share one captured access token;
+a separately logged-in account cannot silently supply the Git credential. Tests
+switch the stored session from A to B (both authorized) and verify the transport
+receives A's grant, and separately verify refusal when A is revoked despite B access.
+The two-process regression blocks the first real Git child at a controlled barrier,
+starts another CLI process, and checks that only one clone reaches the barrier.
+It uses real Git credential fill against the memory-only socket helper and rejects
+an unrelated repository path. Deliberately replacing the shared lock with per-process
+locks makes the contention assertion fail; original source was restored before
+final validation. The earlier Promise.all test is retained only as a basic regression.
+
+The v1 artifact is preserved. v2 needs independent exact-commit rereview before
+staging adoption. No credential permissions, persistent configuration, production
+release, or other repository changes were made.

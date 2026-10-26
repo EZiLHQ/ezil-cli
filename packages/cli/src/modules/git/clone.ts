@@ -1,8 +1,10 @@
 import { lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, rmSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, parse, resolve } from "node:path";
-import { WhoamiResponseSchema } from "@ezil/cli-contract/cli-api";
+import { GitGrantResponseSchema, WhoamiResponseSchema } from "@ezil/cli-contract/cli-api";
 import { parseGitRoutePath } from "@ezil/cli-contract/git-gateway";
 import { accessToken, api, ApiError, apiOriginOf, type Io } from "../../core/session";
+
+import { cloneWithGrant, type CloneTransport, type CloneGrant } from "./clone-transport";
 
 export interface CloneOptions { directory?: string; json?: boolean }
 class CloneError extends Error {
@@ -37,7 +39,7 @@ function safeFolder(folder: string): void {
 	}
 }
 
-async function openRepository(io: Io, canonicalUrl: string, folder: string): Promise<"cloned" | "reused"> {
+async function openRepository(io: Io, canonicalUrl: string, folder: string, authorize: () => Promise<CloneGrant>, transport: CloneTransport): Promise<"cloned" | "reused"> {
 	safeFolder(folder);
 	const lock = join(dirname(folder), `.${basename(folder)}.ezil-clone-lock`);
 	const deadline = Date.now() + 30_000;
@@ -64,12 +66,14 @@ async function openRepository(io: Io, canonicalUrl: string, folder: string): Pro
 			if (top.code !== 0 || top.stdout.trim() !== folder || origin.code !== 0 || origin.stdout.trim() !== canonicalUrl) {
 				fail("destination-conflict", "Destination is not a matching checkout.");
 			}
+			await authorize();
 			return "reused";
 		}
 		temporary = mkdtempSync(join(dirname(folder), ".ezil-clone-"));
 		const checkout = join(temporary, "checkout");
-		const result = io.run(["git", "clone", "--", canonicalUrl, checkout]);
-		if (result.code !== 0) fail("clone-failed", "Could not clone the repository. Check Git and your repository access, then try again.");
+		const grant = await authorize();
+		const code = await transport(canonicalUrl, checkout, grant);
+		if (code !== 0) fail("clone-failed", "Could not clone the repository. Check Git and your repository access, then try again.");
 		safeFolder(folder);
 		// Exclusive reservation prevents replacing a destination created during the clone.
 		try { mkdirSync(folder, { mode: 0o700 }); } catch { fail("destination-conflict", "Destination appeared during clone; nothing was replaced."); }
@@ -90,8 +94,8 @@ async function openRepository(io: Io, canonicalUrl: string, folder: string): Pro
 	}
 }
 
-/** Every open checks live membership; Git still uses the existing repository-scoped helper. */
-export async function clone(io: Io, repository?: string, options: CloneOptions = {}): Promise<number> {
+/** Capture one identity for membership and grant; use that immutable grant for Git. */
+export async function clone(io: Io, repository?: string, options: CloneOptions = {}, transport: CloneTransport = cloneWithGrant): Promise<number> {
 	try {
 		const url = repository === undefined ? null : canonicalRepository(repository);
 		if (repository !== undefined && !url && /[:/\\?#\x00-\x1f]|^-/u.test(repository)) fail("invalid-repository", "Use a canonical HTTPS repository URL or a repository name.", 2);
@@ -115,12 +119,20 @@ export async function clone(io: Io, repository?: string, options: CloneOptions =
 		}
 		const selected = matches[0]!;
 		const folder = resolve(options.directory ?? routeName(selected.cloneUrl));
-		const status = await openRepository(io, selected.cloneUrl, folder);
+		const authorize = async (): Promise<CloneGrant> => {
+			const route = new URL(selected.cloneUrl);
+			const grant = GitGrantResponseSchema.safeParse(await api(io, apiOriginOf(io.env), "/cli/git-grant", {
+				token: live.token, body: { protocol: "https", host: route.host, path: route.pathname.slice(1) },
+			}));
+			if (!grant.success || grant.data.password_expiry_utc * 1000 <= Date.now()) fail("invalid-response", "EZiL returned an invalid repository grant.");
+			return grant.data;
+		};
+		const status = await openRepository(io, selected.cloneUrl, folder, authorize, transport);
 		if (options.json) io.out(JSON.stringify({ canonicalUrl: selected.cloneUrl, folder, accountId: parsed.data.account.id, status }));
 		else { io.out(`${status === "cloned" ? "Cloned into" : "Reusing"} ${folder}.`); io.out(`Next: cd ${folder} && git push`); }
 		return 0;
 	} catch (error) {
-		const failure = error instanceof CloneError ? error : error instanceof ApiError && error.status === 401 ? new CloneError("auth-required", "Not signed in. Run `ezil auth login`.") : new CloneError("clone-failed", "Could not open the repository.");
+		const failure = error instanceof CloneError ? error : error instanceof ApiError && error.status === 401 ? new CloneError("auth-required", "Not signed in. Run `ezil auth login`.") : error instanceof ApiError && (error.status === 403 || error.status === 404) ? new CloneError("repository-not-authorized", "Repository access was refused.", 2) : new CloneError("clone-failed", "Could not open the repository.");
 		if (options.json) io.out(JSON.stringify({ error: { code: failure.code, message: failure.message } }));
 		else io.err(failure.message);
 		return failure.exit;
