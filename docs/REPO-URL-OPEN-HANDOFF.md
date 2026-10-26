@@ -62,7 +62,7 @@ bun run check
 bash ops/build-private-cli.sh /absolute/new/private-artifact-directory
 cd /absolute/new/private-artifact-directory
 sha256sum -c SHA256SUMS
-npm install --ignore-scripts --no-audit --no-fund --prefix /private/os-cli-prefix ./ezilhq-cli-0.2.1-repo-url-open.20261026.4.tgz
+npm install --ignore-scripts --no-audit --no-fund --prefix /private/os-cli-prefix ./ezilhq-cli-0.2.1-repo-url-open.20261026.4.1.tgz
 /private/os-cli-prefix/node_modules/.bin/ezil --version
 ```
 
@@ -125,7 +125,7 @@ Independent exact-commit rereview is required before the OS lane adopts v3.
 Only CLI clone installs SIGTERM/SIGINT handlers, removed when it finishes. An abort
 signal cancels fetches (including auth refresh), lock waits and the Git transport.
 The transport signals its direct Git child and awaits close before cleanup; it does
-not create a new process group or run its own SIGKILL timer. Temp/socket roots and
+not create a new process group and escalates only its owned Git child after 500 ms (see v4 revision below). Temp/socket roots and
 lock cleanup check the captured device/inode; replaced paths are preserved. The
 existing empty reservation check is retained. JSON success is unchanged. Cooperative
 cancellation returns exit 1 and the existing error envelope/code `clone-failed`,
@@ -148,3 +148,21 @@ and cancelled retry. A separate test replaces lock/temp paths during the operati
 and verifies cleanup preserves those unknown replacements. No unrelated full suite
 was repeated. Private v1-v3 artifacts remain receipts; v4 requires independent
 exact-commit cancellation and OS process-group integration rereview. No deployment.
+
+## v4 revision: fit the OS three-second grace
+
+Version 0.2.1-repo-url-open.20261026.4.1 supersedes the original v4 artifact without
+replacing it. SIGTERM/SIGINT cancellation now gives the direct owned Git child
+500 ms before SIGKILL, then awaits close. If escalation occurs, cleanup preserves
+lock, clone temp and credential socket directory, and returns exit 1 with the existing
+`clone-failed` code and message `Repository open interrupted; recovery required after
+forced Git termination.` No success is reported. The socket server is closed, but
+uncertain filesystem state is preserved. The OS Linux subreaper remains responsible
+for terminating/reaping proven orphan descendants even if the CLI has already exited.
+No journal or age-based recovery is introduced.
+
+The new stubborn-Git process regression verifies CLI exit in less than two seconds,
+recovery-required error text and preserved lock/temp/socket state. Targeted Git suite:
+45 tests; CLI typecheck. Cancellation tests also run against the packaged Node CLI.
+No absolute timing guarantee is possible under OS scheduling or filesystem stalls;
+the OS three-second supervisor deadline remains the final bound.

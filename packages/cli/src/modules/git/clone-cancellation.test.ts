@@ -98,3 +98,21 @@ it("forced group kill leaves recovery-required state; a cancelled retry never re
 		// OS reports recovery-required on its SIGKILL path; the killed CLI cannot emit JSON.
 	} finally { await f.close(); }
 }, 10000);
+
+it("CLI escalates its stubborn Git child after 500ms, exits within OS grace and preserves uncertain state", async () => {
+	const f = await fixture();
+	try {
+		const operation = f.launch("force"); await until(() => existsSync(join(f.root, "ready")));
+		const started = Date.now(); group(operation.child, "SIGTERM");
+		const result = await operation.done;
+		expect(Date.now() - started).toBeLessThan(2000);
+		expect(result.code).toBe(1);
+		expect(JSON.parse(result.stdout).error.code).toBe("clone-failed");
+		expect(JSON.parse(result.stdout).error.message).toContain("recovery required");
+		expect(existsSync(f.lock)).toBe(true);
+		const temp = readdirSync(f.root).find(name => name.startsWith(".ezil-clone-"))!;
+		expect(readFileSync(join(f.root, temp, "checkout", "partial"), "utf8")).toBe("owned");
+		expect(readdirSync(f.scratch).some(name => name.startsWith("ezil-grant-"))).toBe(true);
+		// Fixture teardown, like the OS subreaper, terminates proven remaining descendants.
+	} finally { await f.close(); }
+}, 10000);

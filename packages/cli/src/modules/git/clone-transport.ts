@@ -7,6 +7,10 @@ import type { GitGrantResponseSchema } from "@ezil/cli-contract/cli-api";
 
 export type CloneGrant = ReturnType<typeof GitGrantResponseSchema.parse>;
 export type CloneTransport = (url: string, destination: string, grant: CloneGrant, signal?: AbortSignal) => Promise<number>;
+export const CLONE_GIT_TERM_GRACE_MS = 500;
+export class CloneRecoveryRequired extends Error {
+	constructor() { super("Repository open interrupted; recovery required after forced Git termination."); }
+}
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 
 // This helper contains no credentials. Its private socket is an ephemeral operation handle.
@@ -19,6 +23,7 @@ export const cloneWithGrant: CloneTransport = async (url, destination, grant, si
 	const ownedRoot = lstatSync(root);
 	const socketPath = join(root, "credential.sock");
 	const sockets = new Set<Socket>();
+	let forced = false;
 	const server = createServer({ allowHalfOpen: true }, socket => {
 		sockets.add(socket);
 		socket.on("close", () => sockets.delete(socket));
@@ -43,7 +48,7 @@ export const cloneWithGrant: CloneTransport = async (url, destination, grant, si
 			!key.startsWith("GIT_CONFIG") && !key.startsWith("GIT_TRACE") && !["GIT_CURL_VERBOSE", "GIT_TEMPLATE_DIR", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_ASKPASS"].includes(key)));
 		signal?.throwIfAborted();
 		const command = `!${quote(process.versions.bun ? "node" : process.execPath)} -e ${quote(helper)} ${quote(socketPath)}`;
-		return await new Promise<number>(resolve => {
+		return await new Promise<number>((resolve, reject) => {
 			const child = spawn("git", [
 				"-c", "credential.helper=", "-c", "credential.https://github.ezil.work.helper=",
 				"-c", `credential.https://github.ezil.work.helper=${command}`,
@@ -54,12 +59,22 @@ export const cloneWithGrant: CloneTransport = async (url, destination, grant, si
 			], { cwd: root, env: { ...env, HOME: root, XDG_CONFIG_HOME: root, CURL_HOME: root, NETRC: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_COUNT: "0", GIT_TERMINAL_PROMPT: "0" }, stdio: "ignore" });
 			// No detached subgroup: OS owns the complete operation process group.
 			// Await close even after cancellation, so cleanup cannot race a live Git child.
-			const cancel = () => { child.kill("SIGTERM"); };
+			let escalation: ReturnType<typeof setTimeout> | undefined;
+			const cancel = () => {
+				child.kill("SIGTERM");
+				escalation = setTimeout(() => {
+					// Only this still-owned child; OS subreaper owns orphan descendants.
+					forced = true;
+					child.kill("SIGKILL");
+				}, CLONE_GIT_TERM_GRACE_MS);
+			};
 			signal?.addEventListener("abort", cancel, { once: true });
 			if (signal?.aborted) cancel();
 			child.once("error", () => { /* close follows spawn errors too */ });
 			child.once("close", code => {
 				signal?.removeEventListener("abort", cancel);
+				if (escalation) clearTimeout(escalation);
+				if (forced) { reject(new CloneRecoveryRequired()); return; }
 				resolve(code ?? 1);
 			});
 		});
@@ -68,7 +83,7 @@ export const cloneWithGrant: CloneTransport = async (url, destination, grant, si
 		await new Promise<void>(resolve => server.close(() => resolve()));
 		try {
 			const stat = lstatSync(root);
-			if (!stat.isSymbolicLink() && stat.dev === ownedRoot.dev && stat.ino === ownedRoot.ino) rmSync(root, { recursive: true, force: true });
+			if (!forced && !stat.isSymbolicLink() && stat.dev === ownedRoot.dev && stat.ino === ownedRoot.ino) rmSync(root, { recursive: true, force: true });
 		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 	}
 };

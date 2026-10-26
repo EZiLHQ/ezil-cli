@@ -5,7 +5,7 @@ import { GitGrantResponseSchema, WhoamiResponseSchema } from "@ezil/cli-contract
 import { parseGitRoutePath } from "@ezil/cli-contract/git-gateway";
 import { accessToken, api, ApiError, apiOriginOf, type Io } from "../../core/session";
 
-import { cloneWithGrant, type CloneTransport, type CloneGrant } from "./clone-transport";
+import { CloneRecoveryRequired, cloneWithGrant, type CloneTransport, type CloneGrant } from "./clone-transport";
 
 export interface CloneOptions { directory?: string; json?: boolean; signal?: AbortSignal }
 class CloneError extends Error {
@@ -62,6 +62,7 @@ async function openRepository(io: Io, canonicalUrl: string, folder: string, auth
 	let temporary: string | undefined;
 	let ownedTemporary: { dev: number; ino: number } | undefined;
 	let reservation: { dev: number; ino: number } | undefined;
+	let recoveryRequired = false;
 	try {
 		signal?.throwIfAborted();
 		safeFolder(folder);
@@ -94,16 +95,21 @@ async function openRepository(io: Io, canonicalUrl: string, folder: string, auth
 		renameSync(checkout, folder);
 		reservation = undefined;
 		return "cloned";
+	} catch (error) {
+		recoveryRequired = error instanceof CloneRecoveryRequired;
+		throw error;
 	} finally {
-		if (reservation && exists(folder)) {
-			const stat = lstatSync(folder);
-			if (stat.dev === reservation.dev && stat.ino === reservation.ino) {
-				// Only our empty reservation, never somebody else's files.
-				try { rmdirSync(folder); } catch { /* preserve a changed destination */ }
+		if (!recoveryRequired) {
+			if (reservation && exists(folder)) {
+				const stat = lstatSync(folder);
+				if (stat.dev === reservation.dev && stat.ino === reservation.ino) {
+					// Only our empty reservation, never somebody else's files.
+					try { rmdirSync(folder); } catch { /* preserve a changed destination */ }
+				}
 			}
+			if (temporary && ownedTemporary && stillOwned(temporary, ownedTemporary)) rmSync(temporary, { recursive: true, force: true });
+			if (stillOwned(lock, ownedLock)) rmdirSync(lock);
 		}
-		if (temporary && ownedTemporary && stillOwned(temporary, ownedTemporary)) rmSync(temporary, { recursive: true, force: true });
-		if (stillOwned(lock, ownedLock)) rmdirSync(lock);
 	}
 }
 
@@ -155,7 +161,7 @@ export async function clone(io: Io, repository?: string, options: CloneOptions =
 		else { io.out(`${status === "cloned" ? "Cloned into" : "Reusing"} ${folder}.`); io.out(`Next: cd ${folder} && git push`); }
 		return 0;
 	} catch (error) {
-		const failure = signal?.aborted ? new CloneError("clone-failed", "Repository open cancelled.") : error instanceof CloneError ? error : error instanceof ApiError && error.status === 401 ? new CloneError("auth-required", "Not signed in. Run `ezil auth login`.") : error instanceof ApiError && (error.status === 403 || error.status === 404) ? new CloneError("repository-not-authorized", "Repository access was refused.", 2) : new CloneError("clone-failed", "Could not open the repository.");
+		const failure = error instanceof CloneRecoveryRequired ? new CloneError("clone-failed", error.message) : signal?.aborted ? new CloneError("clone-failed", "Repository open cancelled.") : error instanceof CloneError ? error : error instanceof ApiError && error.status === 401 ? new CloneError("auth-required", "Not signed in. Run `ezil auth login`.") : error instanceof ApiError && (error.status === 403 || error.status === 404) ? new CloneError("repository-not-authorized", "Repository access was refused.", 2) : new CloneError("clone-failed", "Could not open the repository.");
 		if (options.json) io.out(JSON.stringify({ error: { code: failure.code, message: failure.message } }));
 		else io.err(failure.message);
 		return failure.exit;
