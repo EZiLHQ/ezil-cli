@@ -94,8 +94,8 @@ const USAGE = `ezil -- the EZiL command line (modules: git, sessions)
   ezil whoami
       Who you are signed in as, and the repositories you can clone.
 
-  ezil clone [repository]
-      Clone your only repository, or select one by its route or project name.
+  ezil clone [repository|canonicalURL] [--directory <absoluteDestination>] [--json]
+      Clone or reuse an authorized repository without changing an existing checkout.
 
   ezil --version
       The installed version.
@@ -216,12 +216,27 @@ async function main(): Promise<number> {
 		return gitCredential(realIo(), argv[1] ?? "", new TextDecoder().decode(Buffer.concat(chunks)));
 	}
 	if (command === "clone") {
-		if (argv.length > 2) { process.stderr.write("Usage: ezil clone [repository]\n"); return 2; }
-		try { return await clone(realIo(), argv[1]); }
-		catch (error: unknown) {
-			process.stderr.write(`${error instanceof Error ? error.message : "ezil clone failed."}\n`);
-			return 1;
+		const json = argv.includes("--json");
+		let repository: string | undefined;
+		let directory: string | undefined;
+		let invalid = false;
+		for (let i = 1; i < argv.length; i++) {
+			const arg = argv[i]!;
+			if (arg === "--json") continue;
+			if (arg === "--directory" || arg.startsWith("--directory=")) {
+				const value = arg === "--directory" ? argv[++i] : arg.slice(12);
+				if (directory !== undefined || !value || value.startsWith("--")) invalid = true;
+				else directory = value;
+			} else if (arg.startsWith("-") || repository !== undefined) invalid = true;
+			else repository = arg;
 		}
+		if (invalid) {
+			const message = "Usage: ezil clone [repository|canonicalURL] [--directory <absoluteDestination>] [--json]";
+			if (json) process.stdout.write(JSON.stringify({ error: { code: "invalid-arguments", message } }) + "\n");
+			else process.stderr.write(message + "\n");
+			return 2;
+		}
+		return clone(realIo(), repository, { json, ...(directory === undefined ? {} : { directory }) });
 	}
 	if (command === "auth" || command === "whoami") {
 		const io = realIo();
