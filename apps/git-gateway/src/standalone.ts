@@ -6,8 +6,20 @@ const ISSUER = "https://id.ezil.work/";
 const JWKS = `${ISSUER}.well-known/jwks.json`;
 const REMOTE = `https://${ACCOUNT}.artifacts.cloudflare.net/git/default/`;
 const REPO = /^[a-z0-9][a-z0-9._-]{0,99}$/;
-// Cloudflare's documented Git token format. The provider verifies the secret and repo scope.
-const TOKEN = /^art_v1_[a-f0-9]{40}\?expires=([0-9]{10,12})$/;
+// Native credentials are opaque: validate transport bounds, never a provider-specific prefix.
+function safeNativeToken(value: unknown): value is string {
+	return typeof value === "string" && value.length >= 16 && value.length <= 8192 &&
+		!/[^A-Za-z0-9._~+/=?-]/.test(value);
+}
+const BASIC_LIMIT = 6 + 4 * Math.ceil((5 + 8192) / 3);
+function nativeExpiry(value: unknown): number {
+	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(value)) return NaN;
+	const parsed = Date.parse(value);
+	if (!Number.isFinite(parsed)) return NaN;
+	const normalized = value.replace(/(?:\.(\d{1,3}))?Z$/, (_match, fraction: string | undefined) =>
+		`.${(fraction ?? "").padEnd(3, "0")}Z`);
+	return new Date(parsed).toISOString() === normalized ? parsed / 1000 : NaN;
+}
 const reply = (status: number, message: string) => new Response(JSON.stringify({ error: message }),
 	{ status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
@@ -51,7 +63,7 @@ function rejectedNativeToken(native: { plaintext?: unknown; scope?: unknown; exp
 	console.warn(JSON.stringify({ event: "native_response_rejected", phase: "native_response_validate",
 		hasPlaintextString: typeof native.plaintext === "string", hasScope: typeof native.scope === "string",
 		hasExpiresAtString: typeof native.expiresAt === "string", scopeMatches: native.scope === scope,
-		nativeTokenFormatMatches: typeof native.plaintext === "string" && TOKEN.test(native.plaintext),
+		nativeTokenFormatMatches: safeNativeToken(native.plaintext),
 		finiteExpiry, expiresAfterID: finiteExpiry && expires > idExpiry,
 		expiresAfterRequestBound: finiteExpiry && expires > issued + 300,
 		tokenLength: typeof native.plaintext === "string" ? native.plaintext.length : 0,
@@ -150,7 +162,7 @@ function pathOf(value: unknown): string | null {
 
 /** Only /v2 routes and registered /default/*.git paths are handled here. Null preserves legacy routing. */
 export async function standalone(request: Request, env: StandaloneEnv, fetcher: Fetch,
-	now = Date.now()): Promise<Response | null> {
+	now = Date.now(), clock: () => number = Date.now): Promise<Response | null> {
 	const url = new URL(request.url);
 	const isApi = url.pathname === "/v2/repos" || url.pathname === "/v2/git/grant";
 	const route = parseGitRoutePath(url.pathname);
@@ -214,19 +226,19 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 			using repo = await env.ARTIFACTS.get(name);
 			phase = "repository_info";
 			if (!providerMatches(await repo.info(), record, name)) return reply(403, "Repository unavailable");
-			const issued = Math.floor(now / 1000);
-			const ttl = Math.min(300, principal.exp - issued);
-			if (ttl < 60) return reply(401, "EZiL ID sign-in expires too soon");
+			const issued = Math.floor(clock() / 1000);
+			const ttl = Math.min(290, principal.exp - issued - 10);
+			if (!Number.isFinite(issued) || ttl < 60) return reply(401, "EZiL ID sign-in expires too soon");
 			const scope = body["scope"] as "read" | "write";
 			phase = "native_token_create";
 			const native = await repo.createToken(scope, ttl);
 			phase = "native_response_validate";
-			const nativeExpiry = TOKEN.exec(native.plaintext)?.[1];
-			const expires = nativeExpiry ? Number(nativeExpiry) : NaN;
-			if (native.scope !== scope || !Number.isSafeInteger(expires) ||
-				Date.parse(native.expiresAt) !== expires * 1000 || expires <= issued ||
-				expires > principal.exp || expires > issued + 300) {
-				rejectedNativeToken(native, scope, issued, principal.exp, expires);
+			const validatedAt = clock() / 1000;
+			const expires = nativeExpiry(native.expiresAt);
+			if (native.scope !== scope || !safeNativeToken(native.plaintext) ||
+				!Number.isFinite(expires) || !Number.isFinite(validatedAt) || expires <= validatedAt ||
+				expires > principal.exp || expires > validatedAt + 300) {
+				rejectedNativeToken(native, scope, validatedAt, principal.exp, expires);
 				return reply(503, "Invalid Artifacts token");
 			}
 			phase = "response_serialize";
@@ -247,12 +259,11 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 	const challenge = () => new Response("EZiL Git sign-in required\n", { status: 401,
 		headers: { "www-authenticate": 'Basic realm="EZiL Git"', "cache-control": "no-store" } });
 	const authorization = request.headers.get("authorization") ?? "";
-	const auth = authorization.length <= 4096 ? /^Basic ([A-Za-z0-9+/=]+)$/.exec(authorization) : null;
+	const auth = authorization.length <= BASIC_LIMIT ? /^Basic ([A-Za-z0-9+/=]+)$/.exec(authorization) : null;
 	let credential = "";
 	try { credential = atob(auth?.[1] ?? ""); } catch { /* deny */ }
 	const token = credential.startsWith("ezil:") ? credential.slice(5) : "";
-	const expiry = TOKEN.exec(token)?.[1];
-	if (!expiry || Number(expiry) <= Math.floor(now / 1000) || Number(expiry) > Math.floor(now / 1000) + 300) return challenge();
+	if (!safeNativeToken(token)) return challenge();
 	try {
 		const tokenHash = await digest(token);
 		if (!(await env.RL.limit({ key: `v2:git:${tokenHash}` })).success) return reply(429, "Too many Git requests");

@@ -111,7 +111,7 @@ export async function handle(request: Request, env: GatewayEnv, deps: GatewayDep
 		deps.log({ ...fields, ...extra, status: response.status, durationMs: deps.now() - started });
 		return response;
 	};
-	const direct = await standalone(request, env, deps.fetch, deps.now());
+	const direct = await standalone(request, env, deps.fetch, deps.now(), deps.now);
 	if (direct) return finish(direct, { decision: "standalone" });
 
 	// Deploy probe: which commit is live, and whether the secrets it needs are bound. Never their values.

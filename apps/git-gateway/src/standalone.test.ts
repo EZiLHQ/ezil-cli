@@ -28,6 +28,7 @@ async function fixture(limitIp = false) {
 	const providerCalls: string[] = [];
 	const nativeTokens = new Map<string, { repo: string; scope: "read" | "write"; expires: number }>();
 	let serial = 0;
+	let providerNow = now;
 	const env: StandaloneEnv = { EZIL_ID_AUDIENCES: `${audience},Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx`,
 		CREATE_RL: { limit: async () => ({ success: true }) },
 		IP_HASH_SALT: "test-salt", RL: { limit: async ({ key }) => { limitedKeys.push(key); return { success: !(limitIp && key.startsWith("v2:ip:")) }; } },
@@ -39,8 +40,8 @@ async function fixture(limitIp = false) {
 				info: async () => { providerCalls.push(`info:${repoName}`); return { id: "fg1wtcrexaf7acl0", name: repoName,
 					remote: `https://${account}.artifacts.cloudflare.net/git/default/${repoName}.git`, defaultBranch: "main", readOnly: false }; },
 				createToken: async (scope, ttl) => { providerCalls.push(`token:${repoName}:${scope}:${ttl}`);
-					const expires = Math.floor(now / 1000) + ttl;
-					const plaintext = `art_v1_${(++serial).toString(16).padStart(40, "0")}?expires=${expires}`;
+					const expires = Math.floor(providerNow / 1000) + ttl;
+					const plaintext = `fixture-${(++serial).toString(16).padStart(40, "0")}.~+/=?-opaque`;
 					nativeTokens.set(plaintext, { repo: repoName, scope, expires });
 					return { plaintext, scope, expiresAt: new Date(expires * 1000).toISOString() }; },
 				[Symbol.dispose]: () => { providerCalls.push(`dispose:${repoName}`); },
@@ -55,7 +56,7 @@ async function fixture(limitIp = false) {
 			expect(init?.redirect).toBe("manual");
 			const native = /^Bearer (.+)$/.exec(new Headers(init?.headers).get("authorization") ?? "")?.[1];
 			const grant = nativeTokens.get(native ?? "");
-			if (!grant || grant.expires <= Math.floor(now / 1000)) return new Response("invalid token", { status: 401 });
+			if (!grant || grant.expires <= Math.floor(providerNow / 1000)) return new Response("invalid token", { status: 401 });
 			if (!target.startsWith(`https://${account}.artifacts.cloudflare.net/git/default/${grant.repo}.git`))
 				return new Response("foreign repo", { status: 403 });
 			if (target.includes("git-receive-pack") && grant.scope !== "write") return new Response("read only", { status: 403 });
@@ -63,7 +64,10 @@ async function fixture(limitIp = false) {
 		}
 		throw new Error(`unexpected fetch ${target}`);
 	};
-	const send = (path: string, init: RequestInit = {}, time = now) => standalone(new Request(`https://github.ezil.work${path}`, init), env, fetcher, time);
+	const send = (path: string, init: RequestInit = {}, time = now, clock: () => number = () => time) => {
+		providerNow = time;
+		return standalone(new Request(`https://github.ezil.work${path}`, init), env, fetcher, time, clock);
+	};
 	return { jwt, send, calls, records, limitedKeys, providerCalls, env };
 }
 
@@ -78,14 +82,14 @@ describe("standalone Git v2", () => {
 			identity: { issuer: string; subject: string }; git: { username: string; token: string; scope: string; expiresAt: string } };
 		expect(packet).toMatchObject({ version: 2, repository: { id: "fg1wtcrexaf7acl0", canonicalURL: url, ref: "refs/heads/main" },
 			identity: { issuer: "https://id.ezil.work/", subject: "auth0|owner" }, git: { username: "ezil", scope: "write" } });
-		expect(Date.parse(packet.git.expiresAt)).toBe(now - now % 1000 + 300_000);
+		expect(Date.parse(packet.git.expiresAt)).toBe(now - now % 1000 + 290_000);
 		const pushed = await f.send(`/default/${name}.git/git-receive-pack`, { method: "POST",
 			headers: { authorization: `Basic ${btoa(`ezil:${packet.git.token}`)}` }, body: "git-data" });
 		expect(pushed?.status).toBe(200);
 		expect(await pushed?.text()).toBe("git-ok");
 		expect(f.calls.every(call => !call.includes("api.ezil.work"))).toBe(true);
 		expect([...f.records.keys()].every(key => key.startsWith("repo:"))).toBe(true);
-		expect(f.providerCalls).toContain(`token:${name}:write:300`);
+		expect(f.providerCalls).toContain(`token:${name}:write:290`);
 	});
 	it("rejects a wrong audience, another user's write, and read grant push", async () => {
 		const f = await fixture();
@@ -171,7 +175,7 @@ describe("standalone Git v2", () => {
 			headers: { authorization: `Bearer ${await f.jwt("auth0|owner")}` }, body: JSON.stringify({ repoURL: url, scope: "read" }) });
 		const packet = await granted!.json() as { git: { token: string } };
 		const before = f.providerCalls.length;
-		const changed = packet.git.token.replace(/^art_v1_./, "art_v1_f");
+		const changed = `changed-${packet.git.token}`;
 		const tampered = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
 			{ headers: { authorization: `Basic ${btoa(`ezil:${changed}`)}` } });
 		expect(tampered?.status).toBe(401);
@@ -189,7 +193,7 @@ describe("standalone Git v2", () => {
 		expect(expired?.status).toBe(401);
 		expect(expired?.headers.has("www-authenticate")).toBe(true);
 		expect(f.providerCalls.length).toBe(before);
-		expect(f.calls.length).toBe(callsBeforeExpiry);
+		expect(f.calls.length).toBe(callsBeforeExpiry + 1);
 	});
 	it("caps a grant at the verified ID token expiry and caches its JWKS key", async () => {
 		const f = await fixture();
@@ -199,16 +203,18 @@ describe("standalone Git v2", () => {
 		const first = await f.send("/v2/git/grant", request);
 		const second = await f.send("/v2/git/grant", request);
 		const packet = await first!.json() as { git: { expiresAt: string } };
-		expect(Date.parse(packet.git.expiresAt)).toBe(Math.floor(now / 1000) * 1000 + 120_000);
+		expect(Date.parse(packet.git.expiresAt)).toBe(Math.floor(now / 1000) * 1000 + 110_000);
 		expect(second?.status).toBe(200);
 		expect(f.calls.filter(call => call.endsWith("/.well-known/jwks.json"))).toHaveLength(1);
 	});
-	it("refuses a native grant when ID lifetime is below Cloudflare's 60-second minimum", async () => {
+	it("reserves the ID expiry margin before the native 60-second minimum", async () => {
 		const f = await fixture();
-		const response = await f.send("/v2/git/grant", { method: "POST",
-			headers: { authorization: `Bearer ${await f.jwt("auth0|owner", audience, 59)}` },
-			body: JSON.stringify({ repoURL: url, scope: "write" }) });
-		expect(response?.status).toBe(401);
+		for (const lifetime of [59, 69]) {
+			const response = await f.send("/v2/git/grant", { method: "POST",
+				headers: { authorization: `Bearer ${await f.jwt("auth0|owner", audience, lifetime)}` },
+				body: JSON.stringify({ repoURL: url, scope: "write" }) });
+			expect(response?.status).toBe(401);
+		}
 		expect(f.providerCalls.some(call => call.startsWith("token:"))).toBe(false);
 	});
 	it("reports only primitive rejection metrics without leaking native response fields", async () => {
@@ -216,7 +222,7 @@ describe("standalone Git v2", () => {
 		const warning = spyOn(console, "warn").mockImplementation(() => {});
 		const secret = "sensitive-provider-secret-sentinel";
 		const issued = Math.floor(now / 1000);
-		const nativeToken = `art_v1_${"a".repeat(40)}?expires=${issued + 301}`;
+		const nativeToken = `opaque-fixture-${"a".repeat(40)}`;
 		try {
 			f.env.ARTIFACTS!.get = async () => ({
 				info: async () => ({ id: "fg1wtcrexaf7acl0", name, remote, defaultBranch: "main", readOnly: false }),
@@ -229,10 +235,10 @@ describe("standalone Git v2", () => {
 			expect(response?.status).toBe(503);
 			expect(await response!.json()).toEqual({ error: "Invalid Artifacts token" });
 			expect(warning).toHaveBeenCalledTimes(1);
-			expect(JSON.parse(warning.mock.calls[0]![0] as string)).toEqual({ event: "native_response_rejected", phase: "native_response_validate",
+			expect(JSON.parse(warning.mock.calls[0]![0] as string)).toMatchObject({ event: "native_response_rejected", phase: "native_response_validate",
 				hasPlaintextString: true, hasScope: true, hasExpiresAtString: true, scopeMatches: true,
 				nativeTokenFormatMatches: true, finiteExpiry: true, expiresAfterID: false, expiresAfterRequestBound: true,
-				tokenLength: nativeToken.length, tokenExpiryMinusIssuedSeconds: 301, expiryTimestampDeltaMilliseconds: 123 });
+				tokenLength: nativeToken.length });
 			f.env.ARTIFACTS!.get = async () => ({
 				info: async () => ({ id: "fg1wtcrexaf7acl0", name, remote, defaultBranch: "main", readOnly: false }),
 				createToken: async () => ({ plaintext: secret, scope: secret as "read", expiresAt: secret }),
@@ -243,15 +249,101 @@ describe("standalone Git v2", () => {
 			expect(malformed?.status).toBe(503);
 			expect(await malformed!.json()).toEqual({ error: "Invalid Artifacts token" });
 			expect(warning).toHaveBeenCalledTimes(2);
-			expect(JSON.parse(warning.mock.calls[1]![0] as string)).toEqual({ event: "native_response_rejected", phase: "native_response_validate",
+			expect(JSON.parse(warning.mock.calls[1]![0] as string)).toMatchObject({ event: "native_response_rejected", phase: "native_response_validate",
 				hasPlaintextString: true, hasScope: true, hasExpiresAtString: true, scopeMatches: false,
-				nativeTokenFormatMatches: false, finiteExpiry: false, expiresAfterID: false, expiresAfterRequestBound: false,
+				nativeTokenFormatMatches: true, finiteExpiry: false, expiresAfterID: false, expiresAfterRequestBound: false,
 				tokenLength: secret.length });
 			expect(JSON.stringify(warning.mock.calls)).not.toContain(secret);
 			expect(JSON.stringify(warning.mock.calls)).not.toContain(nativeToken);
 			expect(JSON.stringify(warning.mock.calls)).not.toContain("auth0|owner");
 		} finally { warning.mockRestore(); }
 	});
+	it("rejects unsafe and oversized Basic tokens before contacting the provider", async () => {
+		const f = await fixture();
+		for (const token of ["a".repeat(15), "a".repeat(8193), "safe-looking-token:colon", "safe-looking-token space", "safe-looking-token\n", "safe-looking-tokené"]) {
+			const response = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
+				{ headers: { authorization: `Basic ${btoa(`ezil:${token}`)}` } });
+			expect(response?.status).toBe(401);
+			expect(response?.headers.has("www-authenticate")).toBe(true);
+		}
+		expect(f.calls).toEqual([]);
+		expect(f.providerCalls).toEqual([]);
+	});
+	it("accepts an opaque 8192-character token unchanged and delegates verification upstream", async () => {
+		const f = await fixture();
+		const response = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
+			{ headers: { authorization: `Basic ${btoa(`ezil:${"a".repeat(8192)}`)}` } });
+		expect(response?.status).toBe(401);
+		expect(f.calls).toEqual([`${remote}/info/refs?service=git-upload-pack`]);
+		expect(f.limitedKeys.some(key => key.startsWith("v2:git:"))).toBe(true);
+		expect(f.providerCalls).toEqual([]);
+	});
+	it("uses a fresh mint clock and accepts an opaque token after a one-second provider delay", async () => {
+		const f = await fixture();
+		let clock = now + 20_000;
+		let requestedTTL = 0;
+		f.env.ARTIFACTS!.get = async () => ({
+			info: async () => ({ id: "fg1wtcrexaf7acl0", name, remote, defaultBranch: "main", readOnly: false }),
+			createToken: async (scope, ttl) => {
+				requestedTTL = ttl;
+				clock += 1000;
+				return { plaintext: "opaque-fixture-provider-token.~+/=?-", scope,
+					expiresAt: new Date((Math.floor(clock / 1000) + ttl) * 1000).toISOString() };
+			}, [Symbol.dispose]: () => {},
+		});
+		const response = await f.send("/v2/git/grant", { method: "POST",
+			headers: { authorization: `Bearer ${await f.jwt("auth0|owner", audience, 120)}` },
+			body: JSON.stringify({ repoURL: url, scope: "read" }) }, now, () => clock);
+		expect(response?.status).toBe(200);
+		expect(requestedTTL).toBe(90);
+		const packet = await response!.json() as { git: { token: string; expiresAt: string } };
+		expect(packet.git.token).toBe("opaque-fixture-provider-token.~+/=?-");
+		expect(Date.parse(packet.git.expiresAt)).toBe(Math.floor(now / 1000) * 1000 + 111_000);
+	});
+	it("rejects native scope, transport, strict ISO expiry, and lifetime violations", async () => {
+		const f = await fixture();
+		const warning = spyOn(console, "warn").mockImplementation(() => {});
+		const issued = Math.floor(now / 1000);
+		const valid = { plaintext: "opaque-fixture-valid-token", scope: "read" as const,
+			expiresAt: new Date((issued + 90) * 1000).toISOString() };
+		try {
+			for (const change of [
+				{ scope: "write" as const }, { plaintext: "a".repeat(8193) }, { plaintext: "unsafe token with spaces" },
+				{ expiresAt: "not-a-date" }, { expiresAt: new Date((issued - 1) * 1000).toISOString() },
+				{ expiresAt: new Date((issued + 301) * 1000).toISOString() },
+				{ expiresAt: new Date((issued + 121) * 1000).toISOString() },
+				{ expiresAt: new Date((issued + 90) * 1000).toISOString().replace("T", " ") },
+			]) {
+				f.env.ARTIFACTS!.get = async () => ({
+					info: async () => ({ id: "fg1wtcrexaf7acl0", name, remote, defaultBranch: "main", readOnly: false }),
+					createToken: async () => ({ ...valid, ...change }), [Symbol.dispose]: () => {},
+				});
+				const response = await f.send("/v2/git/grant", { method: "POST",
+					headers: { authorization: `Bearer ${await f.jwt("auth0|owner", audience, 120)}` },
+					body: JSON.stringify({ repoURL: url, scope: "read" }) });
+				expect(response?.status).toBe(503);
+				expect(await response!.json()).toEqual({ error: "Invalid Artifacts token" });
+			}
+		} finally { warning.mockRestore(); }
+	});
+	it("rechecks expiry after native mint completes", async () => {
+		const f = await fixture();
+		let clock = now;
+		const warning = spyOn(console, "warn").mockImplementation(() => {});
+		f.env.ARTIFACTS!.get = async () => ({
+			info: async () => ({ id: "fg1wtcrexaf7acl0", name, remote, defaultBranch: "main", readOnly: false }),
+			createToken: async scope => { clock += 121_000; return { plaintext: "opaque-fixture-expired-token", scope,
+				expiresAt: new Date((Math.floor(now / 1000) + 110) * 1000).toISOString() }; },
+			[Symbol.dispose]: () => {},
+		});
+		try {
+			const response = await f.send("/v2/git/grant", { method: "POST",
+				headers: { authorization: `Bearer ${await f.jwt("auth0|owner", audience, 120)}` },
+				body: JSON.stringify({ repoURL: url, scope: "read" }) }, now, () => clock);
+			expect(response?.status).toBe(503);
+		} finally { warning.mockRestore(); }
+	});
+
 	it("allowlists native catch diagnostics and excludes exception messages and stacks", async () => {
 		const f = await fixture();
 		const warning = spyOn(console, "warn").mockImplementation(() => {});
