@@ -23,7 +23,7 @@ export interface StandaloneEnv {
 	RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
 }
 export interface RepoRecord { providerId: string; ownerSub: string; publicRead: boolean }
-interface GrantRecord { repo: string; sub: string; scope: "read" | "write"; expires: number }
+interface GrantRecord { repo: string; providerId: string; sub: string; scope: "read" | "write"; expires: number }
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 const hex = (bytes: Uint8Array) => Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 const bytes = (value: string) => Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
@@ -42,6 +42,7 @@ async function identity(token: string, audiences: string, fetcher: Fetch, now: n
 			(typeof claims["nbf"] === "number" && claims["nbf"] > now + 60)) return null;
 		const allowed = audiences.split(",").map(a => a.trim()).filter(Boolean);
 		if (!allowed.length || !allowed.some(a => claims["aud"] === a || (Array.isArray(claims["aud"]) && claims["aud"].includes(a)))) return null;
+		if (Array.isArray(claims["aud"]) && claims["aud"].length > 1 && !allowed.includes(String(claims["azp"]))) return null;
 		const response = await fetcher(JWKS, { signal: AbortSignal.timeout(5000) });
 		if (!response.ok) return null;
 		const data = await response.json() as { keys?: Array<JsonWebKey & { kid?: string }> };
@@ -130,7 +131,8 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 			const grant = `egg_${hex(crypto.getRandomValues(new Uint8Array(32)))}`;
 			const expires = Math.floor(now / 1000) + 300;
 			await env.STANDALONE_REPOS.put(`grant:${await digest(grant)}`,
-				JSON.stringify({ repo: name, sub, scope: body["scope"], expires } satisfies GrantRecord), { expirationTtl: 300 });
+				JSON.stringify({ repo: name, providerId: record.providerId, sub, scope: body["scope"], expires } satisfies GrantRecord),
+				{ expirationTtl: 300 });
 			return Response.json({ version: 2,
 				repository: { id: record.providerId, canonicalURL: `https://github.ezil.work/default/${name}.git`, ref: "refs/heads/main" },
 				identity: { issuer: ISSUER, subject: sub },
@@ -153,7 +155,8 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		const raw = await env.STANDALONE_REPOS.get(`grant:${grantHash}`);
 		const stored = raw ? JSON.parse(raw) as GrantRecord : null;
 		const record = await repoRecord(env, route.routeName, fetcher);
-		if (!stored || !record || stored.repo !== route.routeName || stored.expires <= Math.floor(now / 1000) ||
+		if (!stored || !record || stored.repo !== route.routeName || stored.providerId !== record.providerId ||
+			stored.expires <= Math.floor(now / 1000) ||
 			(stored.sub !== record.ownerSub && !record.publicRead) ||
 			(service === "git-receive-pack" && (stored.scope !== "write" || stored.sub !== record.ownerSub))) return reply(403, "Repository unavailable");
 		const issued = await cf(env, fetcher, "/tokens", "POST",
