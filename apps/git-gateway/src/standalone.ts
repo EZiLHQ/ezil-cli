@@ -4,7 +4,6 @@ import { parseGitRoutePath } from "@ezil/cli-contract/git-gateway";
 const ACCOUNT = "2104e6f103f83b34f363985b093edc7c";
 const ISSUER = "https://id.ezil.work/";
 const JWKS = `${ISSUER}.well-known/jwks.json`;
-const API = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/artifacts/namespaces/default`;
 const REMOTE = `https://${ACCOUNT}.artifacts.cloudflare.net/git/default/`;
 const REPO = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 const TOKEN = /^eg2_([A-Za-z0-9_-]{1,2048})\.([A-Za-z0-9_-]{43})$/;
@@ -17,12 +16,21 @@ interface KV {
 }
 export interface StandaloneEnv {
 	STANDALONE_REPOS?: KV;
-	ARTIFACTS_ACCOUNT_TOKEN?: string;
+	ARTIFACTS?: ArtifactsBinding;
 	STANDALONE_GRANT_SECRET?: string;
 	EZIL_ID_AUDIENCES?: string;
 	IP_HASH_SALT?: string;
 	CREATE_RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
 	RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
+}
+interface ArtifactsRepoHandle extends Disposable {
+	info(): Promise<{ id: string; name: string; remote: string; defaultBranch: string; readOnly: boolean }>;
+	createToken(scope: "read" | "write", ttl: number): Promise<{ plaintext: string; scope: "read" | "write"; expiresAt: string }>;
+}
+interface ArtifactsBinding {
+	create(name: string, options: { readOnly: boolean; setDefaultBranch: string }): Promise<{
+		id: string; name: string; remote: string; defaultBranch: string; token: string }>;
+	get(name: string): Promise<ArtifactsRepoHandle>;
 }
 export interface RepoRecord { providerId: string; ownerSub: string; publicRead: boolean }
 interface GrantClaims { v: 2; repo: string; providerId: string; sub: string; scope: "read" | "write"; iat: number; exp: number; nonce: string }
@@ -121,25 +129,17 @@ async function identity(token: string, audiences: string, fetcher: Fetch, now: n
 	} catch { return null; }
 }
 
-async function cf(env: StandaloneEnv, fetcher: Fetch, path: string, method = "GET", body?: unknown): Promise<unknown> {
-	const response = await fetcher(`${API}${path}`, { method, headers: {
-		authorization: `Bearer ${env.ARTIFACTS_ACCOUNT_TOKEN}`,
-		"content-type": "application/json",
-	}, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(8000) });
-	const result = await response.json() as { success?: boolean; result?: unknown };
-	if (!response.ok || !result.success) throw new Error("Artifacts API failed");
-	return result.result;
-}
-async function repoRecord(env: StandaloneEnv, name: string, fetcher: Fetch, suppliedRaw?: string): Promise<RepoRecord | null> {
+async function repoRecord(env: StandaloneEnv, name: string, suppliedRaw?: string): Promise<RepoRecord | null> {
 	const raw = suppliedRaw ?? await env.STANDALONE_REPOS!.get(`repo:default/${name}`);
 	if (!raw) return null;
 	let record: RepoRecord;
 	try { record = JSON.parse(raw) as RepoRecord; } catch { return null; }
 	if (!/^[a-z0-9]{16}$/.test(record.providerId) || !record.ownerSub || typeof record.publicRead !== "boolean") return null;
-	const provider = await cf(env, fetcher, `/repos/${encodeURIComponent(name)}`) as
-		{ id?: string; name?: string; remote?: string; default_branch?: string; read_only?: boolean };
+	return record;
+}
+function providerMatches(provider: Awaited<ReturnType<ArtifactsRepoHandle["info"]>>, record: RepoRecord, name: string): boolean {
 	return provider.id === record.providerId && provider.name === name && provider.remote === `${REMOTE}${name}.git` &&
-		provider.default_branch === "main" && provider.read_only === false ? record : null;
+		provider.defaultBranch === "main" && provider.readOnly === false;
 }
 function pathOf(value: unknown): string | null {
 	if (typeof value !== "string") return null;
@@ -163,7 +163,7 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 			registeredRaw = raw;
 		} catch { return reply(503, "Repository registry unavailable"); }
 	}
-	if (!env.STANDALONE_REPOS || !env.ARTIFACTS_ACCOUNT_TOKEN || !env.STANDALONE_GRANT_SECRET ||
+	if (!env.STANDALONE_REPOS || !env.ARTIFACTS || !env.STANDALONE_GRANT_SECRET ||
 		!env.EZIL_ID_AUDIENCES || !env.IP_HASH_SALT || !env.RL)
 		return reply(503, "Standalone Git is not configured");
 	if (isApi) {
@@ -193,10 +193,9 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 			const name = `u-${prefix}-${body["name"]}`;
 			if (name.length > 100) return reply(400, "Repository name too long");
 			try {
-				const created = await cf(env, fetcher, "/repos", "POST", { name, default_branch: "main", read_only: false }) as
-					{ id?: string; name?: string; remote?: string };
+				const created = await env.ARTIFACTS.create(name, { setDefaultBranch: "main", readOnly: false });
 				if (!created.id || !/^[a-z0-9]{16}$/.test(created.id) || created.name !== name ||
-					created.remote !== `${REMOTE}${name}.git`) return reply(502, "Invalid Artifacts response");
+					created.remote !== `${REMOTE}${name}.git` || created.defaultBranch !== "main") return reply(502, "Invalid Artifacts response");
 				await env.STANDALONE_REPOS.put(`repo:default/${name}`,
 					JSON.stringify({ providerId: created.id, ownerSub: sub,
 						publicRead: body["visibility"] === "public" } satisfies RepoRecord));
@@ -207,8 +206,10 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		const name = pathOf(body["repoURL"]);
 		if (!name || (body["scope"] !== "read" && body["scope"] !== "write")) return reply(400, "Invalid grant request");
 		try {
-			const record = await repoRecord(env, name, fetcher);
+			const record = await repoRecord(env, name);
 			if (!record || (record.ownerSub !== sub && (body["scope"] === "write" || !record.publicRead))) return reply(403, "Repository unavailable");
+			using repo = await env.ARTIFACTS.get(name);
+			if (!providerMatches(await repo.info(), record, name)) return reply(403, "Repository unavailable");
 			const issued = Math.floor(now / 1000);
 			const expires = Math.min(issued + 300, principal.exp);
 			if (expires <= issued) return reply(401, "EZiL ID sign-in expired");
@@ -243,13 +244,17 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		const grantHash = await digest(grant);
 		if (!(await env.RL.limit({ key: `v2:git:${grantHash}` })).success) return reply(429, "Too many Git requests");
 		if (stored.repo !== route.routeName) return reply(403, "Repository unavailable");
-		const record = await repoRecord(env, route.routeName, fetcher, registeredRaw);
+		const record = await repoRecord(env, route.routeName, registeredRaw);
 		if (!record || stored.providerId !== record.providerId ||
 			(stored.sub !== record.ownerSub && !record.publicRead) ||
 			(service === "git-receive-pack" && (stored.scope !== "write" || stored.sub !== record.ownerSub))) return reply(403, "Repository unavailable");
-		const issued = await cf(env, fetcher, "/tokens", "POST",
-			{ repo: route.routeName, scope: service === "git-receive-pack" ? "write" : "read", ttl: 300 }) as { plaintext?: string };
-		if (!issued.plaintext) return reply(503, "Artifacts token unavailable");
+		using repo = await env.ARTIFACTS.get(route.routeName);
+		const provider = await repo.info();
+		if (!providerMatches(provider, record, route.routeName))
+			return reply(403, "Repository unavailable");
+		const scope = service === "git-receive-pack" ? "write" : "read";
+		const issued = await repo.createToken(scope, 300);
+		if (!issued.plaintext || issued.scope !== scope) return reply(503, "Artifacts token unavailable");
 		const headers = new Headers();
 		for (const key of ["content-type", "content-encoding", "accept", "accept-encoding", "git-protocol", "user-agent"])
 			if (request.headers.has(key)) headers.set(key, request.headers.get(key)!);

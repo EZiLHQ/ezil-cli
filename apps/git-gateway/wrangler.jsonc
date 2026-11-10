@@ -12,18 +12,20 @@
   ],
   "vars": { "API_ORIGIN": "https://api.ezil.work", "EZIL_ID_AUDIENCES": "2tVk0vvzQvm964BtGuXzQxpjlo2JCoCl,Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx" },
   "kv_namespaces": [{ "binding": "STANDALONE_REPOS", "id": "26c715893bab478ca4a1bd5a62f57107" }],
+  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "default" }],
   // Per grant and per IP hash (gateway.ts). Bindings are not inherited by environments, so staging repeats it.
   "ratelimits": [
     { "name": "RL", "namespace_id": "4201", "simple": { "limit": 120, "period": 60 } },
     { "name": "CREATE_RL", "namespace_id": "4203", "simple": { "limit": 5, "period": 60 } }
   ],
   // Secrets, set with `wrangler secret put` (never in this file): GIT_GATEWAY_SECRET, IP_HASH_SALT,
-  // ARTIFACTS_ACCOUNT_TOKEN (scoped) and STANDALONE_GRANT_SECRET (64 lowercase hex chars).
+  // STANDALONE_GRANT_SECRET (64 lowercase hex chars). Artifacts uses a native namespace binding.
   "env": {
     "staging": {
       "routes": [{ "pattern": "git-staging.ezil.work", "custom_domain": true }],
       "vars": { "API_ORIGIN": "https://api.ezil.work", "EZIL_ID_AUDIENCES": "2tVk0vvzQvm964BtGuXzQxpjlo2JCoCl,Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx" },
       "kv_namespaces": [{ "binding": "STANDALONE_REPOS", "id": "9acf3a7f7772446baebbbfd5ddfc3f36" }],
+      "artifacts": [{ "binding": "ARTIFACTS", "namespace": "default" }],
       "ratelimits": [
         { "name": "RL", "namespace_id": "4202", "simple": { "limit": 120, "period": 60 } },
         { "name": "CREATE_RL", "namespace_id": "4204", "simple": { "limit": 5, "period": 60 } }

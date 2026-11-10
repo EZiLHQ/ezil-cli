@@ -25,23 +25,27 @@ async function fixture(limitIp = false) {
 	const records = new Map<string, string>([[`repo:default/${name}`,
 		JSON.stringify({ providerId: "fg1wtcrexaf7acl0", ownerSub: "auth0|owner", publicRead: true })]]);
 	const limitedKeys: string[] = [];
-	const env: StandaloneEnv = { EZIL_ID_AUDIENCES: `${audience},Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx`, ARTIFACTS_ACCOUNT_TOKEN: "account-secret",
+	const providerCalls: string[] = [];
+	const env: StandaloneEnv = { EZIL_ID_AUDIENCES: `${audience},Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx`,
 		STANDALONE_GRANT_SECRET: "a".repeat(64), CREATE_RL: { limit: async () => ({ success: true }) },
 		IP_HASH_SALT: "test-salt", RL: { limit: async ({ key }) => { limitedKeys.push(key); return { success: !(limitIp && key.startsWith("v2:ip:")) }; } },
-		STANDALONE_REPOS: { get: async key => records.get(key) ?? null, put: async (key, value) => { records.set(key, value); } } };
+		STANDALONE_REPOS: { get: async key => records.get(key) ?? null, put: async (key, value) => { records.set(key, value); } },
+		ARTIFACTS: {
+			create: async repoName => { providerCalls.push(`create:${repoName}`); return { id: "fg1wtcrexaf7acl0", name: repoName,
+				remote: `https://${account}.artifacts.cloudflare.net/git/default/${repoName}.git`, defaultBranch: "main", token: "unused" }; },
+			get: async repoName => { providerCalls.push(`get:${repoName}`); return {
+				info: async () => { providerCalls.push(`info:${repoName}`); return { id: "fg1wtcrexaf7acl0", name: repoName,
+					remote: `https://${account}.artifacts.cloudflare.net/git/default/${repoName}.git`, defaultBranch: "main", readOnly: false }; },
+				createToken: async (scope, ttl) => { providerCalls.push(`token:${repoName}:${scope}:${ttl}`);
+					return { plaintext: "art_v1_fixture", scope, expiresAt: new Date(now + ttl * 1000).toISOString() }; },
+				[Symbol.dispose]: () => { providerCalls.push(`dispose:${repoName}`); },
+			}; },
+		} };
 	const calls: string[] = [];
 	const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
 		const target = String(input);
 		calls.push(target);
 		if (target.endsWith("/.well-known/jwks.json")) return Response.json({ keys: [publicKey] });
-		if (target.endsWith("/repos") && init?.method === "POST") {
-			const created = JSON.parse(String(init.body)) as { name: string };
-			return Response.json({ success: true, result: { id: "fg1wtcrexaf7acl0", name: created.name,
-				remote: `https://${account}.artifacts.cloudflare.net/git/default/${created.name}.git` } });
-		}
-		if (target.endsWith(`/repos/${name}`)) return Response.json({ success: true,
-			result: { id: "fg1wtcrexaf7acl0", name, remote, default_branch: "main", read_only: false } });
-		if (target.endsWith("/tokens")) return Response.json({ success: true, result: { plaintext: "art_v1_fixture" } });
 		if (target.startsWith(remote)) {
 			expect(new Headers(init?.headers).get("authorization")).toBe("Bearer art_v1_fixture");
 			return new Response("git-ok", { status: 200 });
@@ -49,7 +53,7 @@ async function fixture(limitIp = false) {
 		throw new Error(`unexpected fetch ${target}`);
 	};
 	const send = (path: string, init: RequestInit = {}, time = now) => standalone(new Request(`https://github.ezil.work${path}`, init), env, fetcher, time);
-	return { jwt, send, calls, records, limitedKeys };
+	return { jwt, send, calls, records, limitedKeys, providerCalls };
 }
 
 describe("standalone Git v2", () => {
@@ -70,6 +74,7 @@ describe("standalone Git v2", () => {
 		expect(await pushed?.text()).toBe("git-ok");
 		expect(f.calls.every(call => !call.includes("api.ezil.work"))).toBe(true);
 		expect([...f.records.keys()].every(key => key.startsWith("repo:"))).toBe(true);
+		expect(f.providerCalls).toContain(`token:${name}:write:300`);
 	});
 	it("rejects a wrong audience, another user's write, and read grant push", async () => {
 		const f = await fixture();
@@ -80,6 +85,7 @@ describe("standalone Git v2", () => {
 		const denied = await f.send("/v2/git/grant", { method: "POST", headers: { authorization: `Bearer ${other}` },
 			body: JSON.stringify({ repoURL: url, scope: "write" }) });
 		expect(denied?.status).toBe(403);
+		expect(f.providerCalls).toEqual([]);
 		const read = await f.send("/v2/git/grant", { method: "POST", headers: { authorization: `Bearer ${other}` },
 			body: JSON.stringify({ repoURL: url, scope: "read" }) });
 		expect(read?.status).toBe(200);
@@ -87,6 +93,7 @@ describe("standalone Git v2", () => {
 		const push = await f.send(`/default/${name}.git/git-receive-pack`, { method: "POST",
 			headers: { authorization: `Basic ${btoa(`ezil:${packet.git.token}`)}` }, body: "git-data" });
 		expect(push?.status).toBe(403);
+		expect(f.providerCalls.some(call => call.startsWith("token:"))).toBe(false);
 	});
 	it("creates a subject-prefixed direct repository and returns its canonical URL", async () => {
 		const f = await fixture();
@@ -117,6 +124,7 @@ describe("standalone Git v2", () => {
 			{ headers: { authorization: `Basic ${btoa("ezil:random")}`, "cf-connecting-ip": "203.0.113.9" } });
 		expect(git?.status).toBe(429);
 		expect(f.calls).toEqual([]);
+		expect(f.providerCalls).toEqual([]);
 	});
 	it("bounds chunked JSON without Content-Length before parsing or provider work", async () => {
 		const f = await fixture();
@@ -128,13 +136,14 @@ describe("standalone Git v2", () => {
 		const response = await f.send("/v2/repos", { method: "POST",
 			headers: { authorization: `Bearer ${await f.jwt("auth0|owner")}` }, body, duplex: "half" } as RequestInit);
 		expect(response?.status).toBe(413);
-		expect(f.calls.some(call => call.includes("/artifacts/"))).toBe(false);
+		expect(f.providerCalls).toEqual([]);
 	});
 	it("falls through on an unregistered default path", async () => {
 		const f = await fixture();
 		const response = await f.send("/default/unregistered.git/info/refs?service=git-upload-pack");
 		expect(response).toBeNull();
 		expect(f.calls).toEqual([]);
+		expect(f.providerCalls).toEqual([]);
 	});
 	it("challenges unknown and expired credentials without Artifacts calls", async () => {
 		const f = await fixture();
@@ -144,26 +153,27 @@ describe("standalone Git v2", () => {
 		expect(random?.status).toBe(401);
 		expect(random?.headers.has("www-authenticate")).toBe(true);
 		expect(f.calls).toEqual([]);
+		expect(f.providerCalls).toEqual([]);
 		const granted = await f.send("/v2/git/grant", { method: "POST",
 			headers: { authorization: `Bearer ${await f.jwt("auth0|owner")}` }, body: JSON.stringify({ repoURL: url, scope: "read" }) });
 		const packet = await granted!.json() as { git: { token: string } };
-		const before = f.calls.length;
+		const before = f.providerCalls.length;
 		const [payload, signature] = packet.git.token.slice(4).split(".");
 		const changed = `eg2_${payload}.${signature![0] === "A" ? "B" : "A"}${signature!.slice(1)}`;
 		const tampered = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
 			{ headers: { authorization: `Basic ${btoa(`ezil:${changed}`)}` } });
 		expect(tampered?.status).toBe(401);
-		expect(f.calls.length).toBe(before);
+		expect(f.providerCalls.length).toBe(before);
 		f.records.set("repo:default/other", JSON.stringify({ providerId: "fg1wtcrexaf7acl0", ownerSub: "auth0|owner", publicRead: true }));
 		const wrongRepo = await f.send("/default/other.git/info/refs?service=git-upload-pack",
 			{ headers: { authorization: `Basic ${btoa(`ezil:${packet.git.token}`)}` } });
 		expect(wrongRepo?.status).toBe(403);
-		expect(f.calls.length).toBe(before);
+		expect(f.providerCalls.length).toBe(before);
 		const expired = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
 			{ headers: { authorization: `Basic ${btoa(`ezil:${packet.git.token}`)}` } }, now + 301_000);
 		expect(expired?.status).toBe(401);
 		expect(expired?.headers.has("www-authenticate")).toBe(true);
-		expect(f.calls.length).toBe(before);
+		expect(f.providerCalls.length).toBe(before);
 	});
 	it("caps a grant at the verified ID token expiry and caches its JWKS key", async () => {
 		const f = await fixture();
