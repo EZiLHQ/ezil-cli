@@ -5,7 +5,7 @@ const account = "2104e6f103f83b34f363985b093edc7c";
 const name = "os-code-url-20261110-a";
 const url = `https://github.ezil.work/default/${name}.git`;
 const remote = `https://${account}.artifacts.cloudflare.net/git/default/${name}.git`;
-const audience = "Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx";
+const audience = "2tVk0vvzQvm964BtGuXzQxpjlo2JCoCl";
 const now = Date.now();
 const base64 = (data: Uint8Array | string) => btoa(typeof data === "string" ? data : String.fromCharCode(...data))
 	.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
@@ -23,7 +23,7 @@ async function fixture() {
 	};
 	const records = new Map<string, string>([[`repo:default/${name}`,
 		JSON.stringify({ providerId: "fg1wtcrexaf7acl0", ownerSub: "auth0|owner", publicRead: true })]]);
-	const env: StandaloneEnv = { EZIL_ID_AUDIENCES: audience, ARTIFACTS_ACCOUNT_TOKEN: "account-secret",
+	const env: StandaloneEnv = { EZIL_ID_AUDIENCES: `${audience},Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx`, ARTIFACTS_ACCOUNT_TOKEN: "account-secret",
 		STANDALONE_REPOS: { get: async key => records.get(key) ?? null, put: async (key, value) => { records.set(key, value); } } };
 	const calls: string[] = [];
 	const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
