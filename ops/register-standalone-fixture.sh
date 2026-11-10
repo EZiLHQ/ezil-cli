@@ -17,6 +17,9 @@ repo_json=$("$wrapper" artifacts repos get os-code-url-20261110-a --namespace de
 jq -e --arg remote 'https://2104e6f103f83b34f363985b093edc7c.artifacts.cloudflare.net/git/default/os-code-url-20261110-a.git' \
   '.id == "fg1wtcrexaf7acl0" and .name == "os-code-url-20261110-a" and .remote == $remote and .default_branch == "main" and .read_only == false' \
   <<< "$repo_json" > /dev/null || { echo 'provider fixture mismatch' >&2; exit 3; }
+existing=$("$wrapper" kv key list --namespace-id "$kv" --remote --prefix 'repo:default/os-code-url-20261110-a')
+[[ $(jq '[.[] | select(.name == "repo:default/os-code-url-20261110-a")] | length' <<< "$existing") == 0 ]] ||
+  { echo 'fixture already registered; refusing ownership overwrite' >&2; exit 3; }
 jq -cn --arg sub "$subject" '{providerId:"fg1wtcrexaf7acl0",ownerSub:$sub,publicRead:true}' |
   "$wrapper" kv key put 'repo:default/os-code-url-20261110-a' --namespace-id "$kv" --remote --path /dev/stdin > /dev/null
 echo "registered provider fixture in $mode KV (owner subject withheld)"

@@ -19,6 +19,8 @@ export interface StandaloneEnv {
 	STANDALONE_REPOS?: KV;
 	ARTIFACTS_ACCOUNT_TOKEN?: string;
 	EZIL_ID_AUDIENCES?: string;
+	CREATE_RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
+	RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
 }
 export interface RepoRecord { providerId: string; ownerSub: string; publicRead: boolean }
 interface GrantRecord { repo: string; sub: string; scope: "read" | "write"; expires: number }
@@ -89,6 +91,8 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		const bearer = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "");
 		const sub = bearer && bearer[1]!.length <= 8192 ? await identity(bearer[1]!, env.EZIL_ID_AUDIENCES, fetcher, Math.floor(now / 1000)) : null;
 		if (!sub) return reply(401, "EZiL ID sign-in required");
+		const limiter = url.pathname === "/v2/repos" ? env.CREATE_RL : env.RL;
+		if (limiter && !(await limiter.limit({ key: `v2:${await digest(sub)}` })).success) return reply(429, "Too many Git requests");
 		let body: Record<string, unknown>;
 		try {
 			const raw = await request.text();
@@ -139,7 +143,9 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 	try { grant = atob(auth?.[1] ?? "").split(":").slice(1).join(":"); } catch { /* deny */ }
 	if (!TOKEN.test(grant)) return new Response("EZiL Git sign-in required\n", { status: 401, headers: { "www-authenticate": 'Basic realm="EZiL Git"', "cache-control": "no-store" } });
 	try {
-		const raw = await env.STANDALONE_REPOS.get(`grant:${await digest(grant)}`);
+		const grantHash = await digest(grant);
+		if (env.RL && !(await env.RL.limit({ key: `v2:git:${grantHash}` })).success) return reply(429, "Too many Git requests");
+		const raw = await env.STANDALONE_REPOS.get(`grant:${grantHash}`);
 		const stored = raw ? JSON.parse(raw) as GrantRecord : null;
 		const record = await repoRecord(env, route.routeName, fetcher);
 		if (!stored || !record || stored.repo !== route.routeName || stored.expires <= Math.floor(now / 1000) ||
