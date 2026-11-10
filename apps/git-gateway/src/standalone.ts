@@ -19,6 +19,7 @@ export interface StandaloneEnv {
 	STANDALONE_REPOS?: KV;
 	ARTIFACTS_ACCOUNT_TOKEN?: string;
 	EZIL_ID_AUDIENCES?: string;
+	IP_HASH_SALT?: string;
 	CREATE_RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
 	RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
 }
@@ -87,10 +88,16 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 	const isApi = url.pathname === "/v2/repos" || url.pathname === "/v2/git/grant";
 	const route = parseGitRoutePath(url.pathname);
 	if (!isApi && (!route || route.routeNamespace !== "default" || route.rest === "")) return null;
-	if (!env.STANDALONE_REPOS || !env.ARTIFACTS_ACCOUNT_TOKEN || !env.EZIL_ID_AUDIENCES) return reply(503, "Standalone Git is not configured");
+	if (!env.STANDALONE_REPOS || !env.ARTIFACTS_ACCOUNT_TOKEN || !env.EZIL_ID_AUDIENCES || !env.IP_HASH_SALT || !env.RL)
+		return reply(503, "Standalone Git is not configured");
 	if (isApi) {
 		if (request.method !== "POST") return reply(405, "Method not allowed");
 		if (Number(request.headers.get("content-length") ?? 0) > 4096) return reply(413, "Request too large");
+		// Cloudflare supplies this header. The shared missing-IP bucket also limits local or malformed requests.
+		const ipHash = await digest(`${env.IP_HASH_SALT}:${request.headers.get("cf-connecting-ip") ?? "missing"}`);
+		try {
+			if (!(await env.RL.limit({ key: `v2:ip:${ipHash}` })).success) return reply(429, "Too many Git requests");
+		} catch { return reply(503, "Git rate limiter unavailable"); }
 		const bearer = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "");
 		const sub = bearer && bearer[1]!.length <= 8192 ? await identity(bearer[1]!, env.EZIL_ID_AUDIENCES, fetcher, Math.floor(now / 1000)) : null;
 		if (!sub) return reply(401, "EZiL ID sign-in required");

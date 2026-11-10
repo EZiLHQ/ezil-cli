@@ -10,7 +10,7 @@ const now = Date.now();
 const base64 = (data: Uint8Array | string) => btoa(typeof data === "string" ? data : String.fromCharCode(...data))
 	.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 
-async function fixture() {
+async function fixture(limitIp = false) {
 	const keys = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048,
 		publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
 	const publicKey = { ...await crypto.subtle.exportKey("jwk", keys.publicKey), kid: "fixture", alg: "RS256", use: "sig" };
@@ -23,7 +23,9 @@ async function fixture() {
 	};
 	const records = new Map<string, string>([[`repo:default/${name}`,
 		JSON.stringify({ providerId: "fg1wtcrexaf7acl0", ownerSub: "auth0|owner", publicRead: true })]]);
+	const limitedKeys: string[] = [];
 	const env: StandaloneEnv = { EZIL_ID_AUDIENCES: `${audience},Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx`, ARTIFACTS_ACCOUNT_TOKEN: "account-secret",
+		IP_HASH_SALT: "test-salt", RL: { limit: async ({ key }) => { limitedKeys.push(key); return { success: !(limitIp && key.startsWith("v2:ip:")) }; } },
 		STANDALONE_REPOS: { get: async key => records.get(key) ?? null, put: async (key, value) => { records.set(key, value); } } };
 	const calls: string[] = [];
 	const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
@@ -45,7 +47,7 @@ async function fixture() {
 		throw new Error(`unexpected fetch ${target}`);
 	};
 	const send = (path: string, init: RequestInit = {}) => standalone(new Request(`https://github.ezil.work${path}`, init), env, fetcher, now);
-	return { jwt, send, calls, records };
+	return { jwt, send, calls, records, limitedKeys };
 }
 
 describe("standalone Git v2", () => {
@@ -97,5 +99,16 @@ describe("standalone Git v2", () => {
 		const invalid = await f.send("/v2/repos", { method: "POST",
 			headers: { authorization: `Bearer ${await f.jwt("auth0|owner")}` }, body: JSON.stringify({ name: "foo.git" }) });
 		expect(invalid?.status).toBe(400);
+	});
+	it("limits an invalid caller by hashed IP before any JWKS or Artifacts request", async () => {
+		const f = await fixture(true);
+		const response = await f.send("/v2/git/grant", { method: "POST", headers: {
+			authorization: "Bearer invalid.token.value", "cf-connecting-ip": "203.0.113.9",
+		}, body: JSON.stringify({ repoURL: url, scope: "read" }) });
+		expect(response?.status).toBe(429);
+		expect(f.calls).toEqual([]);
+		expect(f.limitedKeys).toHaveLength(1);
+		expect(f.limitedKeys[0]).toMatch(/^v2:ip:[a-f0-9]{64}$/);
+		expect(f.limitedKeys[0]).not.toContain("203.0.113.9");
 	});
 });
