@@ -30,6 +30,8 @@ import pkg from "../package.json" with { type: "json" };
 import { login, logout, sessions, whoami } from "../src/core/auth";
 import type { Io } from "../src/core/session";
 import { clone } from "../src/modules/git/clone";
+import { standaloneClone } from "../src/modules/git/standalone-clone";
+import { withCloneSignals } from "../src/modules/git/clone-cancellation";
 import { gitCredential, gitSetup } from "../src/modules/git/credential";
 
 /** Read the whole of stdin. Returns `{}` when there is nothing on it. */
@@ -96,6 +98,9 @@ const USAGE = `ezil -- the EZiL command line (modules: git, sessions)
 
   ezil clone [repository]
       Clone your only repository, or select one by its route or project name.
+
+  ezil clone <canonicalURL> --directory <absolute> --json --grant-fd=3
+      Open a repository using an inherited standalone EZiL Git grant.
 
   ezil --version
       The installed version.
@@ -215,6 +220,25 @@ async function main(): Promise<number> {
 		for await (const chunk of process.stdin) chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : new Uint8Array(chunk));
 		return gitCredential(realIo(), argv[1] ?? "", new TextDecoder().decode(Buffer.concat(chunks)));
 	}
+	if (command === "clone" && argv.some(arg => arg === "--grant-fd" || arg.startsWith("--grant-fd="))) {
+  const args = argv.slice(2);
+  const directory = optionOf(args, "directory");
+  const fd = optionOf(args, "grant-fd");
+  const consumed = new Set<number>();
+  let valid = !!argv[1] && !argv[1].startsWith("-");
+  for (const name of ["directory", "grant-fd"]) {
+   const indices = args.flatMap((arg, index) => arg === `--${name}` || arg.startsWith(`--${name}=`) ? [index] : []);
+   if (indices.length !== 1) { valid = false; continue; }
+   const index = indices[0]!; consumed.add(index);
+   if (args[index] === `--${name}`) consumed.add(index + 1);
+  }
+  const jsonIndices = args.flatMap((arg, index) => arg === "--json" ? [index] : []);
+  if (jsonIndices.length === 1) consumed.add(jsonIndices[0]!); else valid = false;
+  if (args.some((_, index) => !consumed.has(index)) || !directory || fd !== "3" || !valid) {
+   process.stdout.write(JSON.stringify({error:{code:"invalid-arguments",message:"Use a canonical URL, absolute --directory, --json and --grant-fd=3."}}) + "\n"); return 2;
+  }
+  return withCloneSignals(signal => standaloneClone(argv[1]!, {directory, grantFd:3, json:true, signal}, line => process.stdout.write(`${line}\n`)));
+ }
 	if (command === "clone") {
 		if (argv.length > 2) { process.stderr.write("Usage: ezil clone [repository]\n"); return 2; }
 		try { return await clone(realIo(), argv[1]); }

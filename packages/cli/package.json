@@ -1,6 +1,6 @@
 {
 	"name": "@ezil/cli",
-	"version": "0.2.0",
+	"version": "0.3.0-standalone.20261110.1",
 	"private": true,
 	"license": "Apache-2.0",
 	"type": "module",

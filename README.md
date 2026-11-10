@@ -78,3 +78,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). In short, with Bun 1.3.14: `bun install 
 ## License
 
 [Apache-2.0](LICENSE). Copyright 2026 EZiL.
+
+## Standalone repository open
+
+Authenticated supervisors can open a `github.ezil.work` repository with an inherited v2 Git grant and an explicit absolute destination. This mode uses EZiL ID and a Cloudflare repository ID, without a Works account or project. See [the standalone v2 contract](https://github.com/EZiLHQ/ezil-cli/blob/main/docs/STANDALONE-GIT-V2.md) for the command, packet, structured result, and cancellation rules.
