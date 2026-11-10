@@ -38,6 +38,37 @@ const hex = (bytes: Uint8Array) => Array.from(bytes, b => b.toString(16).padStar
 const bytes = (value: string) => Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
 const digest = async (value: string) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))));
 const jwksCache = new Map<string, { key: CryptoKey; until: number }>();
+type GrantPhase = "registry_lookup" | "repository_get" | "repository_info" | "native_token_create" | "native_response_validate" | "response_serialize";
+const ARTIFACTS_ERROR_CODES = new Set(["ALREADY_EXISTS", "NOT_FOUND", "IMPORT_IN_PROGRESS", "FORK_IN_PROGRESS", "INVALID_INPUT",
+	"INVALID_REPO_NAME", "INVALID_TTL", "INVALID_URL", "REMOTE_AUTH_REQUIRED", "UPSTREAM_UNAVAILABLE", "MEMORY_LIMIT", "INTERNAL_ERROR"]);
+const ERROR_NAMES = new Set(["ArtifactsError", "Error", "TypeError", "ReferenceError", "RangeError", "SyntaxError", "SuppressedError"]);
+
+/** Primitive, allowlisted diagnostics only: never serialize a provider response or exception. */
+function rejectedNativeToken(native: { plaintext?: unknown; scope?: unknown; expiresAt?: unknown }, scope: string,
+	issued: number, idExpiry: number, expires: number): void {
+	const expiryTimestamp = typeof native.expiresAt === "string" ? Date.parse(native.expiresAt) : NaN;
+	const finiteExpiry = Number.isFinite(expires);
+	console.warn(JSON.stringify({ event: "native_response_rejected", phase: "native_response_validate",
+		hasPlaintextString: typeof native.plaintext === "string", hasScope: typeof native.scope === "string",
+		hasExpiresAtString: typeof native.expiresAt === "string", scopeMatches: native.scope === scope,
+		nativeTokenFormatMatches: typeof native.plaintext === "string" && TOKEN.test(native.plaintext),
+		finiteExpiry, expiresAfterID: finiteExpiry && expires > idExpiry,
+		expiresAfterRequestBound: finiteExpiry && expires > issued + 300,
+		tokenLength: typeof native.plaintext === "string" ? native.plaintext.length : 0,
+		...(finiteExpiry ? { tokenExpiryMinusIssuedSeconds: expires - issued } : {}),
+		...(finiteExpiry && Number.isFinite(expiryTimestamp) ? { expiryTimestampDeltaMilliseconds: expiryTimestamp - expires * 1000 } : {}) }));
+}
+function failedNativeGrant(phase: GrantPhase, error: unknown): void {
+	let errorName = "unknown", errorCode = "unknown";
+	try {
+		if (error && typeof error === "object") {
+			const candidate = error as { name?: unknown; code?: unknown };
+			if (typeof candidate.name === "string" && ERROR_NAMES.has(candidate.name)) errorName = candidate.name;
+			if (typeof candidate.code === "string" && ARTIFACTS_ERROR_CODES.has(candidate.code)) errorCode = candidate.code;
+		}
+	} catch { /* An exception accessor is not a diagnostic source. */ }
+	console.warn(JSON.stringify({ event: "native_grant_failed", phase, errorName, errorCode }));
+}
 
 class TooLarge extends Error {}
 async function smallJson(request: Request): Promise<unknown> {
@@ -175,28 +206,36 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		}
 		const name = pathOf(body["repoURL"]);
 		if (!name || (body["scope"] !== "read" && body["scope"] !== "write")) return reply(400, "Invalid grant request");
+		let phase: GrantPhase = "registry_lookup";
 		try {
 			const record = await repoRecord(env, name);
 			if (!record || (record.ownerSub !== sub && (body["scope"] === "write" || !record.publicRead))) return reply(403, "Repository unavailable");
+			phase = "repository_get";
 			using repo = await env.ARTIFACTS.get(name);
+			phase = "repository_info";
 			if (!providerMatches(await repo.info(), record, name)) return reply(403, "Repository unavailable");
 			const issued = Math.floor(now / 1000);
 			const ttl = Math.min(300, principal.exp - issued);
 			if (ttl < 60) return reply(401, "EZiL ID sign-in expires too soon");
 			const scope = body["scope"] as "read" | "write";
+			phase = "native_token_create";
 			const native = await repo.createToken(scope, ttl);
+			phase = "native_response_validate";
 			const nativeExpiry = TOKEN.exec(native.plaintext)?.[1];
 			const expires = nativeExpiry ? Number(nativeExpiry) : NaN;
 			if (native.scope !== scope || !Number.isSafeInteger(expires) ||
 				Date.parse(native.expiresAt) !== expires * 1000 || expires <= issued ||
-				expires > principal.exp || expires > issued + 300)
+				expires > principal.exp || expires > issued + 300) {
+				rejectedNativeToken(native, scope, issued, principal.exp, expires);
 				return reply(503, "Invalid Artifacts token");
+			}
+			phase = "response_serialize";
 			return Response.json({ version: 2,
 				repository: { id: record.providerId, canonicalURL: `https://github.ezil.work/default/${name}.git`, ref: "refs/heads/main" },
 				identity: { issuer: ISSUER, subject: sub },
 				git: { username: "ezil", token: native.plaintext, expiresAt: native.expiresAt, scope } },
 				{ headers: { "cache-control": "no-store" } });
-		} catch { return reply(503, "Grant unavailable"); }
+		} catch (error) { failedNativeGrant(phase, error); return reply(503, "Grant unavailable"); }
 	}
 	if (!route || !REPO.test(route.routeName)) return reply(404, "Not found");
 	const service = route.rest === "/info/refs" ? url.searchParams.get("service") : route.rest.slice(1);

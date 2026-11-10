@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { standalone, type StandaloneEnv } from "./standalone";
 
 const account = "2104e6f103f83b34f363985b093edc7c";
@@ -64,7 +64,7 @@ async function fixture(limitIp = false) {
 		throw new Error(`unexpected fetch ${target}`);
 	};
 	const send = (path: string, init: RequestInit = {}, time = now) => standalone(new Request(`https://github.ezil.work${path}`, init), env, fetcher, time);
-	return { jwt, send, calls, records, limitedKeys, providerCalls };
+	return { jwt, send, calls, records, limitedKeys, providerCalls, env };
 }
 
 describe("standalone Git v2", () => {
@@ -211,4 +211,70 @@ describe("standalone Git v2", () => {
 		expect(response?.status).toBe(401);
 		expect(f.providerCalls.some(call => call.startsWith("token:"))).toBe(false);
 	});
+	it("reports only primitive rejection metrics without leaking native response fields", async () => {
+		const f = await fixture();
+		const warning = spyOn(console, "warn").mockImplementation(() => {});
+		const secret = "sensitive-provider-secret-sentinel";
+		const issued = Math.floor(now / 1000);
+		const nativeToken = `art_v1_${"a".repeat(40)}?expires=${issued + 301}`;
+		try {
+			f.env.ARTIFACTS!.get = async () => ({
+				info: async () => ({ id: "fg1wtcrexaf7acl0", name, remote, defaultBranch: "main", readOnly: false }),
+				createToken: async () => ({ plaintext: nativeToken, scope: "read",
+					expiresAt: new Date((issued + 301) * 1000 + 123).toISOString(), secret, subject: secret, idToken: secret }),
+				[Symbol.dispose]: () => {},
+			});
+			const response = await f.send("/v2/git/grant", { method: "POST",
+				headers: { authorization: `Bearer ${await f.jwt("auth0|owner")}` }, body: JSON.stringify({ repoURL: url, scope: "read" }) });
+			expect(response?.status).toBe(503);
+			expect(await response!.json()).toEqual({ error: "Invalid Artifacts token" });
+			expect(warning).toHaveBeenCalledTimes(1);
+			expect(JSON.parse(warning.mock.calls[0]![0] as string)).toEqual({ event: "native_response_rejected", phase: "native_response_validate",
+				hasPlaintextString: true, hasScope: true, hasExpiresAtString: true, scopeMatches: true,
+				nativeTokenFormatMatches: true, finiteExpiry: true, expiresAfterID: false, expiresAfterRequestBound: true,
+				tokenLength: nativeToken.length, tokenExpiryMinusIssuedSeconds: 301, expiryTimestampDeltaMilliseconds: 123 });
+			f.env.ARTIFACTS!.get = async () => ({
+				info: async () => ({ id: "fg1wtcrexaf7acl0", name, remote, defaultBranch: "main", readOnly: false }),
+				createToken: async () => ({ plaintext: secret, scope: secret as "read", expiresAt: secret }),
+				[Symbol.dispose]: () => {},
+			});
+			const malformed = await f.send("/v2/git/grant", { method: "POST",
+				headers: { authorization: `Bearer ${await f.jwt("auth0|owner")}` }, body: JSON.stringify({ repoURL: url, scope: "read" }) });
+			expect(malformed?.status).toBe(503);
+			expect(await malformed!.json()).toEqual({ error: "Invalid Artifacts token" });
+			expect(warning).toHaveBeenCalledTimes(2);
+			expect(JSON.parse(warning.mock.calls[1]![0] as string)).toEqual({ event: "native_response_rejected", phase: "native_response_validate",
+				hasPlaintextString: true, hasScope: true, hasExpiresAtString: true, scopeMatches: false,
+				nativeTokenFormatMatches: false, finiteExpiry: false, expiresAfterID: false, expiresAfterRequestBound: false,
+				tokenLength: secret.length });
+			expect(JSON.stringify(warning.mock.calls)).not.toContain(secret);
+			expect(JSON.stringify(warning.mock.calls)).not.toContain(nativeToken);
+			expect(JSON.stringify(warning.mock.calls)).not.toContain("auth0|owner");
+		} finally { warning.mockRestore(); }
+	});
+	it("allowlists native catch diagnostics and excludes exception messages and stacks", async () => {
+		const f = await fixture();
+		const warning = spyOn(console, "warn").mockImplementation(() => {});
+		const secret = "sensitive-exception-secret-sentinel";
+		try {
+			for (const known of [false, true]) {
+				f.env.ARTIFACTS!.get = async () => { throw Object.assign(new Error(secret), {
+					name: known ? "ArtifactsError" : secret, code: known ? "UPSTREAM_UNAVAILABLE" : secret,
+					stack: secret, subject: secret, token: secret,
+				}); };
+				const response = await f.send("/v2/git/grant", { method: "POST",
+					headers: { authorization: `Bearer ${await f.jwt("auth0|owner")}` }, body: JSON.stringify({ repoURL: url, scope: "read" }) });
+				expect(response?.status).toBe(503);
+				expect(await response!.json()).toEqual({ error: "Grant unavailable" });
+			}
+			expect(warning).toHaveBeenCalledTimes(2);
+			expect(warning.mock.calls.map(call => JSON.parse(call[0] as string))).toEqual([
+				{ event: "native_grant_failed", phase: "repository_get", errorName: "unknown", errorCode: "unknown" },
+				{ event: "native_grant_failed", phase: "repository_get", errorName: "ArtifactsError", errorCode: "UPSTREAM_UNAVAILABLE" },
+			]);
+			expect(JSON.stringify(warning.mock.calls)).not.toContain(secret);
+			expect(JSON.stringify(warning.mock.calls)).not.toContain("auth0|owner");
+		} finally { warning.mockRestore(); }
+	});
+
 });
