@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdtempSync, openSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,10 +48,19 @@ for(const signal of ["SIGTERM","SIGINT"] as const)test(`${signal} cancels real G
 },10000);
 
 
-test("an unfinished private packet times out within the bounded descriptor deadline",async()=>{
- const root=mkdtempSync(join(tmpdir(),"v2-pipe-timeout-"));const p=launch(root);const started=Date.now();
- try{const r=await p.done;expect(Date.now()-started).toBeLessThan(6500);expect(r.code).toBe(2);expect(JSON.parse(r.stdout).error.code).toBe("repository-not-authorized");expect(readdirSync(root)).toEqual([]);}
- finally{killGroup(p.child,"SIGKILL");rmSync(root,{recursive:true,force:true});}
+test("an unfinished private packet times out within the bounded descriptor deadline",()=>{
+ const root=mkdtempSync(join(tmpdir(),"v2-pipe-timeout-"));
+ // Bun 1.3.14 can throw ENOENT while adapting the extra writer FD in the
+ // test host. A Node supervisor owns the anonymous writer and keeps it open;
+ // only the CLI's unchanged five-second reader deadline can finish this test.
+ const supervisor=`const cp=require('node:child_process');const child=cp.spawn(process.argv[1],[process.argv[2],'clone',${JSON.stringify(url)},'--directory',process.argv[3],'--json','--grant-fd=3'],{stdio:['ignore','pipe','pipe','pipe']});child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);child.stdio[3].on('error',()=>{});child.on('error',()=>{process.exitCode=1});child.on('close',code=>{child.stdio[3].destroy();process.exitCode=code??1});`;
+ const started=Date.now();
+ try{
+  const child=spawnSync('node',['-e',supervisor,runtime,entry,join(root,"checkout")],{env:{...process.env,EZIL_HOME:join(root,"no-auth"),EZIL_CLI_STORE:"file"},encoding:'utf8',timeout:7000});
+  if(child.error)throw child.error;
+  const elapsed=Date.now()-started;expect(elapsed).toBeGreaterThanOrEqual(4500);expect(elapsed).toBeLessThan(6500);
+  expect(child.status).toBe(2);expect(JSON.parse(child.stdout).error.code).toBe("repository-not-authorized");expect(child.stderr).toBe("");expect(readdirSync(root)).toEqual([]);
+ }finally{rmSync(root,{recursive:true,force:true});}
 },8000);
 
 test("AbortController cancels a stalled inherited descriptor without a process-group signal",async()=>{
