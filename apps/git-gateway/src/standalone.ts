@@ -68,8 +68,10 @@ async function repoRecord(env: StandaloneEnv, name: string, fetcher: Fetch): Pro
 	let record: RepoRecord;
 	try { record = JSON.parse(raw) as RepoRecord; } catch { return null; }
 	if (!/^[a-z0-9]{16}$/.test(record.providerId) || !record.ownerSub || typeof record.publicRead !== "boolean") return null;
-	const provider = await cf(env, fetcher, `/repos/${encodeURIComponent(name)}`) as { id?: string; name?: string; remote?: string };
-	return provider.id === record.providerId && provider.name === name && provider.remote === `${REMOTE}${name}.git` ? record : null;
+	const provider = await cf(env, fetcher, `/repos/${encodeURIComponent(name)}`) as
+		{ id?: string; name?: string; remote?: string; default_branch?: string; read_only?: boolean };
+	return provider.id === record.providerId && provider.name === name && provider.remote === `${REMOTE}${name}.git` &&
+		provider.default_branch === "main" && provider.read_only === false ? record : null;
 }
 function pathOf(value: unknown): string | null {
 	if (typeof value !== "string") return null;

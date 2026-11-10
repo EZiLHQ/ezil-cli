@@ -35,7 +35,8 @@ async function fixture() {
 			return Response.json({ success: true, result: { id: "fg1wtcrexaf7acl0", name: created.name,
 				remote: `https://${account}.artifacts.cloudflare.net/git/default/${created.name}.git` } });
 		}
-		if (target.endsWith(`/repos/${name}`)) return Response.json({ success: true, result: { id: "fg1wtcrexaf7acl0", name, remote } });
+		if (target.endsWith(`/repos/${name}`)) return Response.json({ success: true,
+			result: { id: "fg1wtcrexaf7acl0", name, remote, default_branch: "main", read_only: false } });
 		if (target.endsWith("/tokens")) return Response.json({ success: true, result: { plaintext: "art_v1_fixture" } });
 		if (target.startsWith(remote)) {
 			expect(new Headers(init?.headers).get("authorization")).toBe("Bearer art_v1_fixture");
