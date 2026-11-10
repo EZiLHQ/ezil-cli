@@ -11,13 +11,14 @@ const base64 = (data: Uint8Array | string) => btoa(typeof data === "string" ? da
 	.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 
 async function fixture(limitIp = false) {
+	const kid = crypto.randomUUID();
 	const keys = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048,
 		publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
-	const publicKey = { ...await crypto.subtle.exportKey("jwk", keys.publicKey), kid: "fixture", alg: "RS256", use: "sig" };
-	const jwt = async (sub: string, aud = audience) => {
-		const head = base64(JSON.stringify({ alg: "RS256", typ: "JWT", kid: "fixture" }));
+	const publicKey = { ...await crypto.subtle.exportKey("jwk", keys.publicKey), kid, alg: "RS256", use: "sig" };
+	const jwt = async (sub: string, aud = audience, lifetime = 600) => {
+		const head = base64(JSON.stringify({ alg: "RS256", typ: "JWT", kid }));
 		const body = base64(JSON.stringify({ iss: "https://id.ezil.work/", sub, aud,
-			iat: Math.floor(now / 1000), exp: Math.floor(now / 1000) + 600 }));
+			iat: Math.floor(now / 1000), exp: Math.floor(now / 1000) + lifetime }));
 		const signature = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", keys.privateKey, new TextEncoder().encode(`${head}.${body}`));
 		return `${head}.${body}.${base64(new Uint8Array(signature))}`;
 	};
@@ -25,6 +26,7 @@ async function fixture(limitIp = false) {
 		JSON.stringify({ providerId: "fg1wtcrexaf7acl0", ownerSub: "auth0|owner", publicRead: true })]]);
 	const limitedKeys: string[] = [];
 	const env: StandaloneEnv = { EZIL_ID_AUDIENCES: `${audience},Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx`, ARTIFACTS_ACCOUNT_TOKEN: "account-secret",
+		STANDALONE_GRANT_SECRET: "a".repeat(64), CREATE_RL: { limit: async () => ({ success: true }) },
 		IP_HASH_SALT: "test-salt", RL: { limit: async ({ key }) => { limitedKeys.push(key); return { success: !(limitIp && key.startsWith("v2:ip:")) }; } },
 		STANDALONE_REPOS: { get: async key => records.get(key) ?? null, put: async (key, value) => { records.set(key, value); } } };
 	const calls: string[] = [];
@@ -46,7 +48,7 @@ async function fixture(limitIp = false) {
 		}
 		throw new Error(`unexpected fetch ${target}`);
 	};
-	const send = (path: string, init: RequestInit = {}) => standalone(new Request(`https://github.ezil.work${path}`, init), env, fetcher, now);
+	const send = (path: string, init: RequestInit = {}, time = now) => standalone(new Request(`https://github.ezil.work${path}`, init), env, fetcher, time);
 	return { jwt, send, calls, records, limitedKeys };
 }
 
@@ -67,6 +69,7 @@ describe("standalone Git v2", () => {
 		expect(pushed?.status).toBe(200);
 		expect(await pushed?.text()).toBe("git-ok");
 		expect(f.calls.every(call => !call.includes("api.ezil.work"))).toBe(true);
+		expect([...f.records.keys()].every(key => key.startsWith("repo:"))).toBe(true);
 	});
 	it("rejects a wrong audience, another user's write, and read grant push", async () => {
 		const f = await fixture();
@@ -110,5 +113,68 @@ describe("standalone Git v2", () => {
 		expect(f.limitedKeys).toHaveLength(1);
 		expect(f.limitedKeys[0]).toMatch(/^v2:ip:[a-f0-9]{64}$/);
 		expect(f.limitedKeys[0]).not.toContain("203.0.113.9");
+		const git = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
+			{ headers: { authorization: `Basic ${btoa("ezil:random")}`, "cf-connecting-ip": "203.0.113.9" } });
+		expect(git?.status).toBe(429);
+		expect(f.calls).toEqual([]);
+	});
+	it("bounds chunked JSON without Content-Length before parsing or provider work", async () => {
+		const f = await fixture();
+		const body = new ReadableStream<Uint8Array>({ start(controller) {
+			controller.enqueue(new Uint8Array(2048));
+			controller.enqueue(new Uint8Array(2049));
+			controller.close();
+		} });
+		const response = await f.send("/v2/repos", { method: "POST",
+			headers: { authorization: `Bearer ${await f.jwt("auth0|owner")}` }, body, duplex: "half" } as RequestInit);
+		expect(response?.status).toBe(413);
+		expect(f.calls.some(call => call.includes("/artifacts/"))).toBe(false);
+	});
+	it("falls through on an unregistered default path", async () => {
+		const f = await fixture();
+		const response = await f.send("/default/unregistered.git/info/refs?service=git-upload-pack");
+		expect(response).toBeNull();
+		expect(f.calls).toEqual([]);
+	});
+	it("challenges unknown and expired credentials without Artifacts calls", async () => {
+		const f = await fixture();
+		const unknown = `eg2_${base64("{}")}.${base64(new Uint8Array(32))}`;
+		const random = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
+			{ headers: { authorization: `Basic ${btoa(`ezil:${unknown}`)}` } });
+		expect(random?.status).toBe(401);
+		expect(random?.headers.has("www-authenticate")).toBe(true);
+		expect(f.calls).toEqual([]);
+		const granted = await f.send("/v2/git/grant", { method: "POST",
+			headers: { authorization: `Bearer ${await f.jwt("auth0|owner")}` }, body: JSON.stringify({ repoURL: url, scope: "read" }) });
+		const packet = await granted!.json() as { git: { token: string } };
+		const before = f.calls.length;
+		const [payload, signature] = packet.git.token.slice(4).split(".");
+		const changed = `eg2_${payload}.${signature![0] === "A" ? "B" : "A"}${signature!.slice(1)}`;
+		const tampered = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
+			{ headers: { authorization: `Basic ${btoa(`ezil:${changed}`)}` } });
+		expect(tampered?.status).toBe(401);
+		expect(f.calls.length).toBe(before);
+		f.records.set("repo:default/other", JSON.stringify({ providerId: "fg1wtcrexaf7acl0", ownerSub: "auth0|owner", publicRead: true }));
+		const wrongRepo = await f.send("/default/other.git/info/refs?service=git-upload-pack",
+			{ headers: { authorization: `Basic ${btoa(`ezil:${packet.git.token}`)}` } });
+		expect(wrongRepo?.status).toBe(403);
+		expect(f.calls.length).toBe(before);
+		const expired = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
+			{ headers: { authorization: `Basic ${btoa(`ezil:${packet.git.token}`)}` } }, now + 301_000);
+		expect(expired?.status).toBe(401);
+		expect(expired?.headers.has("www-authenticate")).toBe(true);
+		expect(f.calls.length).toBe(before);
+	});
+	it("caps a grant at the verified ID token expiry and caches its JWKS key", async () => {
+		const f = await fixture();
+		const token = await f.jwt("auth0|owner", audience, 120);
+		const request = { method: "POST", headers: { authorization: `Bearer ${token}` },
+			body: JSON.stringify({ repoURL: url, scope: "read" }) };
+		const first = await f.send("/v2/git/grant", request);
+		const second = await f.send("/v2/git/grant", request);
+		const packet = await first!.json() as { git: { expiresAt: string } };
+		expect(Date.parse(packet.git.expiresAt)).toBe(Math.floor(now / 1000) * 1000 + 120_000);
+		expect(second?.status).toBe(200);
+		expect(f.calls.filter(call => call.endsWith("/.well-known/jwks.json"))).toHaveLength(1);
 	});
 });
