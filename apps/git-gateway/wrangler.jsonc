@@ -10,14 +10,16 @@
     { "pattern": "github.ezil.work", "custom_domain": true },
     { "pattern": "git.ezil.work", "custom_domain": true }
   ],
-  "vars": { "API_ORIGIN": "https://api.ezil.work" },
+  "vars": { "API_ORIGIN": "https://api.ezil.work", "EZIL_ID_AUDIENCES": "Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx" },
+  "kv_namespaces": [{ "binding": "STANDALONE_REPOS", "id": "26c715893bab478ca4a1bd5a62f57107" }],
   // Per grant and per IP hash (gateway.ts). Bindings are not inherited by environments, so staging repeats it.
   "ratelimits": [{ "name": "RL", "namespace_id": "4201", "simple": { "limit": 120, "period": 60 } }],
   // Secrets, set with `wrangler secret put` (never in this file): GIT_GATEWAY_SECRET, IP_HASH_SALT.
   "env": {
     "staging": {
       "routes": [{ "pattern": "git-staging.ezil.work", "custom_domain": true }],
-      "vars": { "API_ORIGIN": "https://api.ezil.work" },
+      "vars": { "API_ORIGIN": "https://api.ezil.work", "EZIL_ID_AUDIENCES": "Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx" },
+      "kv_namespaces": [{ "binding": "STANDALONE_REPOS", "id": "9acf3a7f7772446baebbbfd5ddfc3f36" }],
       "ratelimits": [{ "name": "RL", "namespace_id": "4202", "simple": { "limit": 120, "period": 60 } }]
     }
   }
