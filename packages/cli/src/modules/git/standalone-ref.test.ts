@@ -18,7 +18,7 @@ test('standalone v2 selects full branch despite different remote HEAD/same-name 
   // including branch selection; the remote has distinct branch/tag objects.
   writeFileSync(join(bin,'git'),`#!/usr/bin/env node\nconst cp=require('node:child_process');const args=process.argv.slice(2);const clone=args.includes('clone');if(clone)args[args.indexOf(${JSON.stringify(url)})]=${JSON.stringify(remote)};let r=cp.spawnSync(${JSON.stringify(git)},args,{stdio:'inherit'});if(clone&&r.status===0)r=cp.spawnSync(${JSON.stringify(git)},['-C',args.at(-1),'remote','set-url','origin',${JSON.stringify(url)}],{stdio:'inherit'});process.exit(r.status??1);\n`,{mode:0o700});
   async function open(ref:string,dest=folder){
-   const packet={version:2,repository:{id:'cf-repo-fixture',canonicalURL:url,ref},identity:{issuer:'https://id.ezil.work/',subject:'auth0|fixture'},git:{username:'ezil',token:'v2_synthetic_private_token',expiresAt:new Date(Date.now()+60000).toISOString(),scope:'read'}};
+   const packet={version:2,repository:{id:'cf-repo-fixture',canonicalURL:url,ref},identity:{issuer:'https://id.ezil.work/',subject:'auth0|fixture'},git:{username:'ezil',token:'art_v1_'+'a'.repeat(40)+'?expires='+Math.floor(Date.now()/1000+60),expiresAt:new Date(Date.now()+60000).toISOString(),scope:'read'}};
    // Isolate child stdio collection from Bun 1.3.14's asynchronous pipe EOF
    // bookkeeping after the cancellation suites. The supervisor passes the
    // packet only through anonymous stdin and the CLI's inherited descriptor 3.
@@ -34,7 +34,7 @@ test('standalone v2 selects full branch despite different remote HEAD/same-name 
   const localHead=run('-C',folder,'rev-parse','HEAD');writeFileSync(join(folder,'staged'),'staged local');run('-C',folder,'add','staged');writeFileSync(join(folder,'fixture'),'dirty topic');writeFileSync(join(folder,'untracked'),'preserve');const before=run('-C',folder,'status','--porcelain=v1');
   expect((await open('refs/heads/topic')).value.status).toBe('reused');
   const mismatch=await open('refs/heads/main');expect(mismatch.code).toBe(2);expect(mismatch.value.error.code).toBe('repository-ref-mismatch');
-  expect(run('-C',folder,'rev-parse','HEAD')).toBe(localHead);expect(run('-C',folder,'symbolic-ref','HEAD')).toBe('refs/heads/topic');expect(readFileSync(join(folder,'fixture'),'utf8')).toBe('dirty topic');expect(readFileSync(join(folder,'untracked'),'utf8')).toBe('preserve');expect(run('-C',folder,'status','--porcelain=v1')).toBe(before);expect(readFileSync(join(folder,'.git','config'),'utf8')).not.toContain('v2_synthetic');
+  expect(run('-C',folder,'rev-parse','HEAD')).toBe(localHead);expect(run('-C',folder,'symbolic-ref','HEAD')).toBe('refs/heads/topic');expect(readFileSync(join(folder,'fixture'),'utf8')).toBe('dirty topic');expect(readFileSync(join(folder,'untracked'),'utf8')).toBe('preserve');expect(run('-C',folder,'status','--porcelain=v1')).toBe(before);expect(readFileSync(join(folder,'.git','config'),'utf8')).not.toContain('art_v1_');
   const tagDest=join(root,'tag-checkout');expect((await open('refs/heads/tag-only',tagDest)).code).not.toBe(0);expect(existsSync(tagDest)).toBe(false);
  }finally{rmSync(root,{recursive:true,force:true});}
 },15000);

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0-standalone.20261110.1
+
+- Accept opaque native Git passwords containing `?expires=` while preserving size, control, whitespace, and colon guards.
+- Exercise native-format credentials through private-FD clone and the real Git credential protocol.
+
 ## 0.3.0-standalone.20261110.0
 
 - Add standalone v2 private-FD repository open with exact EZiL ID identity, Cloudflare repository metadata, and declared read/write scope.

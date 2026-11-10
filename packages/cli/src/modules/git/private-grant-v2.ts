@@ -34,7 +34,7 @@ export function validatePrivateGrant(value: unknown, canonicalURL: string, now =
   || !exact(identity, ["issuer", "subject"]) || identity["issuer"] !== "https://id.ezil.work/" || !opaqueId(identity["subject"])
   || !exact(git, ["username", "token", "expiresAt", "scope"]) || git["username"] !== "ezil"
   || (git["scope"] !== "read" && git["scope"] !== "write")
-  || typeof git["token"] !== "string" || /\s/.test(git["token"]) || !/^[A-Za-z0-9._~+\/=\-]{16,8192}$/.test(git["token"])
+  || typeof git["token"] !== "string" || /\s/.test(git["token"]) || !/^[A-Za-z0-9._~+\/=?\-]{16,8192}$/.test(git["token"])
   || typeof git["expiresAt"] !== "string" || !git["expiresAt"].endsWith("Z") || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(git["expiresAt"])) throw new Error("invalid private grant");
  const expires = Date.parse(git["expiresAt"]);
  if (!Number.isFinite(expires) || expires <= now || expires > now + PRIVATE_GRANT_MAX_LIFETIME_MS) throw new Error("invalid private grant");

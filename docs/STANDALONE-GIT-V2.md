@@ -35,7 +35,7 @@ The exact packet shape is:
 }
 ```
 
-Unknown fields are rejected at every level. Tokens use 16–8192 characters from the HTTP-safe alphabet `A-Za-z0-9._~+/=-`; a legacy token prefix is not required. Canonical URL spelling must match the command exactly. Credentials expire during an operation and are checked again before transport and before each Git credential request. The credential helper serves only the authorized HTTPS host and repository path through an ephemeral socket in a private directory.
+Unknown fields are rejected at every level. Tokens use 16–8192 characters from the HTTP-safe alphabet `A-Za-z0-9._~+/=?-`, including the `?expires=` suffix in native Artifacts HTTP Basic passwords. Whitespace, controls, and colon remain rejected; a legacy token prefix is not required. Canonical URL spelling must match the command exactly. Credentials expire during an operation and are checked again before transport and before each Git credential request. The credential helper serves only the authorized HTTPS host and repository path through an ephemeral socket in a private directory.
 
 The destination must be absolute, have a pre-created real parent directory, and contain no symlink components. A new clone uses a temporary sibling and an exclusive destination reservation. Git checks out the authorized branch even when the remote default branch differs; a tag with the same name cannot substitute for the branch.
 

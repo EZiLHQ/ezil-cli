@@ -13,6 +13,22 @@ test("strict v2 preserves Cloudflare ID, exact identity, branch and declared sco
   expect(result).not.toHaveProperty("accountId"); expect(result).not.toHaveProperty("binding");
  }
 });
+test("native Artifacts HTTP Basic passwords preserve the opaque expiry suffix", () => {
+ const token = "art_v1_" + "a".repeat(40) + "?expires=" + Math.floor((now + 60000) / 1000);
+ for (const scope of ["read", "write"] as const) {
+  const p = packet(); p.git.token = token; p.git.scope = scope;
+  const grant = validatePrivateGrant(p, url, now).grant;
+  expect(grant.password).toBe(token); expect(grant.scope).toBe(scope);
+  expect(grant.password_expiry_utc).toBe(Math.floor((now + 60000) / 1000));
+ }
+});
+test("native-format passwords still reject controls, whitespace, colon and size violations", () => {
+ const token = "art_v1_" + "b".repeat(40) + "?expires=" + Math.floor((now + 60000) / 1000);
+ for (const bad of [token + ":password", token + "\n", token + "\r", token + "\t", token + " ", token + "\0", token + "\x7f", token + "\u2028", token + "\u2029", token + "é", token + ";", token + "&admin=true", "a".repeat(15), "a".repeat(8193)]) {
+  const p = packet(); p.git.token = bad;
+  expect(() => validatePrivateGrant(p, url, now)).toThrow();
+ }
+});
 test("every v2 boundary rejects substitution, unknown fields, unsafe credentials and expired or overlong grants", () => {
  const p = packet();
  const invalid: unknown[] = [null, [], {...p, version:1}, {...p, binding:{}}, {...p, repository:{...p.repository, projectId:"fake"}}, {...p, identity:{...p.identity, accountId:"fake"}},

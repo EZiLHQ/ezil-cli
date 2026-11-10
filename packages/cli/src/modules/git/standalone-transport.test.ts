@@ -3,9 +3,9 @@ import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-test("real Git credential protocol receives only the pinned repository grant; argv/env/config contain no token",async()=>{
+test("real Git credential protocol preserves native Artifacts passwords for only the pinned repository; argv/env/config contain no token",async()=>{
  const root=mkdtempSync(join(tmpdir(),"v2-credential-"));const realGit=Bun.which("git")!, marker=join(root,"checked"), runner=join(root,"runner.ts"), destination=join(root,"checkout");
- const token="v2_synthetic_opaque_secret";
+ const token="art_v1_"+"b".repeat(40)+"?expires="+Math.floor(Date.now()/1000+60);
  writeFileSync(join(root,"git"),`#!/usr/bin/env node
 const fs=require('node:fs'),cp=require('node:child_process');const args=process.argv.slice(2),index=args.indexOf('clone'),flags=args.slice(0,index),token=${JSON.stringify(token)};
 if(args.join(' ').includes(token)||Object.values(process.env).some(value=>value.includes(token)))process.exit(41);
