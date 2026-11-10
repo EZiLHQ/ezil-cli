@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0-standalone.20261110.0
+
+- Add standalone v2 private-FD repository open with exact EZiL ID identity, Cloudflare repository metadata, and declared read/write scope.
+- Preserve local work on matching reuse, enforce the authorized branch, and cancel bounded Git operations without exposing credentials.
+
+
 All notable changes to this project are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 

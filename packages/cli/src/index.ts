@@ -78,3 +78,5 @@ export { accessToken, apiOriginOf, DEFAULT_API_ORIGIN, fileStore, keychainStore,
 export { login, logout, sessions, whoami, type SetupStep } from "./core/auth";
 export { GIT_HOSTS, gitConfigCommands, gitCredential, gitSetup } from "./modules/git/credential";
 export { clone } from "./modules/git/clone";
+
+export { standaloneClone, type StandaloneCloneOptions } from "./modules/git/standalone-clone";
