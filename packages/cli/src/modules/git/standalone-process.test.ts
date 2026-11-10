@@ -66,7 +66,13 @@ test("an unfinished private packet times out within the bounded descriptor deadl
 test("AbortController cancels a stalled inherited descriptor without a process-group signal",async()=>{
  const root=mkdtempSync(join(tmpdir(),"v2-library-cancel-")), runner=join(root,"runner.ts");
  writeFileSync(runner,`import {standaloneClone} from ${JSON.stringify(join(import.meta.dir,"standalone-clone.ts"))};const controller=new AbortController();setTimeout(()=>controller.abort(),150);process.exitCode=await standaloneClone(${JSON.stringify(url)},{directory:${JSON.stringify(join(root,"checkout"))},json:true,grantFd:3,signal:controller.signal},console.log);`);
- const started=Date.now(), child=spawn(process.execPath,[runner],{stdio:["ignore","pipe","pipe","pipe"]});let stdout="";child.stdout!.on("data",c=>stdout+=c);child.stderr!.resume();
- try{const code=await new Promise(resolve=>child.on("close",resolve));expect(code).toBe(1);expect(Date.now()-started).toBeLessThan(1500);expect(JSON.parse(stdout).error.message).toContain("cancelled");expect(existsSync(join(root,"checkout"))).toBe(false);}
- finally{child.kill("SIGKILL");rmSync(root,{recursive:true,force:true});}
+ // Keep the idle writer alive in Node, avoiding Bun's extra-FD adapter and
+ // preventing EOF from being mistaken for AbortController cancellation.
+ const supervisor=`const cp=require('node:child_process');const child=cp.spawn(process.argv[1],[process.argv[2]],{stdio:['ignore','pipe','pipe','pipe']});child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);child.stdio[3].on('error',()=>{});child.on('error',()=>{process.exitCode=1});child.on('close',code=>{child.stdio[3].destroy();process.exitCode=code??1});`;
+ const started=Date.now();
+ try{
+  const child=spawnSync('node',['-e',supervisor,process.execPath,runner],{encoding:'utf8',timeout:2000});
+  if(child.error)throw child.error;
+  expect(child.status).toBe(1);expect(Date.now()-started).toBeLessThan(1500);expect(JSON.parse(child.stdout).error.message).toContain("cancelled");expect(child.stderr).toBe("");expect(existsSync(join(root,"checkout"))).toBe(false);
+ }finally{rmSync(root,{recursive:true,force:true});}
 },8000);
