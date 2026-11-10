@@ -19,7 +19,7 @@ Its successful response is:
 
 The server verifies RS256 against the fixed EZiL ID JWKS, exact issuer, configured audience, subject, issue time, and expiry. A write grant requires the repository's registered owner subject. Authenticated users can receive read grants for repositories marked `publicRead`. Grants live for at most five minutes and bind to one repository and scope. The gateway checks the Artifacts provider ID and remote on every request, then issues a separate, short lived Artifacts token that stays server side.
 
-`POST /v2/repos` takes the same bearer and JSON `{ "name": "<repo-name>" }`. It creates `default/u-<first-16-hex-of-SHA256-subject>-<repo-name>` and returns `{ "repoURL", "ref": "refs/heads/main", "providerId" }`. The repository is registered as owner writable and authenticated public readable. A failed registry write after provider creation is reported as unavailable and requires operator reconciliation; it does not claim the repository for another user.
+`POST /v2/repos` takes the same bearer and JSON `{ "name": "<repo-name>", "visibility": "private" | "public" }`; omitted visibility means private. It creates `default/u-<first-16-hex-of-SHA256-subject>-<repo-name>` and returns `{ "repoURL", "ref": "refs/heads/main", "providerId" }`. The owner can write; for public repositories, other signed in users can read. A failed registry write after provider creation is reported as unavailable and requires operator reconciliation; it does not claim the repository for another user.
 
 ## Existing fixture and deployment preparation
 

@@ -45,7 +45,7 @@ async function fixture() {
 		throw new Error(`unexpected fetch ${target}`);
 	};
 	const send = (path: string, init: RequestInit = {}) => standalone(new Request(`https://github.ezil.work${path}`, init), env, fetcher, now);
-	return { jwt, send, calls };
+	return { jwt, send, calls, records };
 }
 
 describe("standalone Git v2", () => {
@@ -92,6 +92,8 @@ describe("standalone Git v2", () => {
 		expect(result.repoURL).toMatch(/^https:\/\/github\.ezil\.work\/default\/u-[a-f0-9]{16}-sample\.git$/);
 		expect(result.ref).toBe("refs/heads/main");
 		expect(result.providerId).toBe("fg1wtcrexaf7acl0");
+		const registered = f.records.get(`repo:default/${result.repoURL.split("/").at(-1)!.replace(/\.git$/, "")}`);
+		expect(JSON.parse(registered!).publicRead).toBe(false);
 		const invalid = await f.send("/v2/repos", { method: "POST",
 			headers: { authorization: `Bearer ${await f.jwt("auth0|owner")}` }, body: JSON.stringify({ name: "foo.git" }) });
 		expect(invalid?.status).toBe(400);

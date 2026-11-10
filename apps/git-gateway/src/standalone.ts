@@ -105,6 +105,8 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		if (url.pathname === "/v2/repos") {
 			if (typeof body["name"] !== "string" || !REPO.test(body["name"]) || body["name"].includes("..") ||
 				body["name"].endsWith(".git")) return reply(400, "Invalid repository name");
+			if (body["visibility"] !== undefined && body["visibility"] !== "private" && body["visibility"] !== "public")
+				return reply(400, "Invalid repository visibility");
 			const prefix = (await digest(sub)).slice(0, 16);
 			const name = `u-${prefix}-${body["name"]}`;
 			if (name.length > 100) return reply(400, "Repository name too long");
@@ -114,7 +116,8 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 				if (!created.id || !/^[a-z0-9]{16}$/.test(created.id) || created.name !== name ||
 					created.remote !== `${REMOTE}${name}.git`) return reply(502, "Invalid Artifacts response");
 				await env.STANDALONE_REPOS.put(`repo:default/${name}`,
-					JSON.stringify({ providerId: created.id, ownerSub: sub, publicRead: true } satisfies RepoRecord));
+					JSON.stringify({ providerId: created.id, ownerSub: sub,
+						publicRead: body["visibility"] === "public" } satisfies RepoRecord));
 				return Response.json({ repoURL: `https://github.ezil.work/default/${name}.git`, ref: "refs/heads/main", providerId: created.id },
 					{ status: 201, headers: { "cache-control": "no-store" } });
 			} catch { return reply(503, "Repository creation unavailable"); }
