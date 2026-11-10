@@ -269,6 +269,10 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		if (!(await env.RL.limit({ key: `v2:git:${tokenHash}` })).success) return reply(429, "Too many Git requests");
 		const record = await repoRecord(env, route.routeName, registeredRaw);
 		if (!record) return reply(403, "Repository unavailable");
+		// An optional expiry hint can only request renewal; native validation still authorizes every forwarded token.
+		const expiryHint = /\?expires=([0-9]+)$/.exec(token)?.[1];
+		const hintedExpiry = expiryHint === undefined ? NaN : Number(expiryHint);
+		if (Number.isSafeInteger(hintedExpiry) && hintedExpiry > 0 && hintedExpiry <= clock() / 1000) return challenge();
 		const headers = new Headers();
 		for (const key of ["content-type", "content-encoding", "accept", "accept-encoding", "git-protocol", "user-agent"])
 			if (request.headers.has(key)) headers.set(key, request.headers.get(key)!);

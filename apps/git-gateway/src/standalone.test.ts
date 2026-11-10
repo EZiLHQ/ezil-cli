@@ -10,7 +10,7 @@ const now = Date.now();
 const base64 = (data: Uint8Array | string) => btoa(typeof data === "string" ? data : String.fromCharCode(...data))
 	.replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 
-async function fixture(limitIp = false) {
+async function fixture(limitIp = false, invalidStatus = 403) {
 	const kid = crypto.randomUUID();
 	const keys = await crypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048,
 		publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
@@ -48,6 +48,7 @@ async function fixture(limitIp = false) {
 			}; },
 		} };
 	const calls: string[] = [];
+	const upstreamTokens: string[] = [];
 	const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
 		const target = String(input);
 		calls.push(target);
@@ -55,8 +56,9 @@ async function fixture(limitIp = false) {
 		if (target.startsWith(`https://${account}.artifacts.cloudflare.net/git/default/`)) {
 			expect(init?.redirect).toBe("manual");
 			const native = /^Bearer (.+)$/.exec(new Headers(init?.headers).get("authorization") ?? "")?.[1];
+			upstreamTokens.push(native ?? "");
 			const grant = nativeTokens.get(native ?? "");
-			if (!grant || grant.expires <= Math.floor(providerNow / 1000)) return new Response("invalid token", { status: 401 });
+			if (!grant || grant.expires <= Math.floor(providerNow / 1000)) return new Response("invalid token", { status: invalidStatus });
 			if (!target.startsWith(`https://${account}.artifacts.cloudflare.net/git/default/${grant.repo}.git`))
 				return new Response("foreign repo", { status: 403 });
 			if (target.includes("git-receive-pack") && grant.scope !== "write") return new Response("read only", { status: 403 });
@@ -68,7 +70,7 @@ async function fixture(limitIp = false) {
 		providerNow = time;
 		return standalone(new Request(`https://github.ezil.work${path}`, init), env, fetcher, time, clock);
 	};
-	return { jwt, send, calls, records, limitedKeys, providerCalls, env };
+	return { jwt, send, calls, records, limitedKeys, providerCalls, nativeTokens, upstreamTokens, env };
 }
 
 describe("standalone Git v2", () => {
@@ -163,7 +165,7 @@ describe("standalone Git v2", () => {
 		expect(f.calls).toEqual([]);
 		expect(f.providerCalls).toEqual([]);
 	});
-	it("challenges malformed, unknown, and expired credentials; rejects a foreign repo", async () => {
+	it("challenges malformed credentials and preserves upstream tamper, expiry, and foreign-repo denials", async () => {
 		const f = await fixture();
 		const random = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
 			{ headers: { authorization: `Basic ${btoa("ezil:invalid")}` } });
@@ -178,7 +180,8 @@ describe("standalone Git v2", () => {
 		const changed = `changed-${packet.git.token}`;
 		const tampered = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
 			{ headers: { authorization: `Basic ${btoa(`ezil:${changed}`)}` } });
-		expect(tampered?.status).toBe(401);
+		expect(tampered?.status).toBe(403);
+		expect(tampered?.headers.has("www-authenticate")).toBe(false);
 		expect(f.providerCalls.length).toBe(before);
 		expect(f.calls.at(-1)).toContain(remote);
 		f.records.set("repo:default/other", JSON.stringify({ providerId: "fg1wtcrexaf7acl0", ownerSub: "auth0|owner", publicRead: true }));
@@ -190,8 +193,8 @@ describe("standalone Git v2", () => {
 		const callsBeforeExpiry = f.calls.length;
 		const expired = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
 			{ headers: { authorization: `Basic ${btoa(`ezil:${packet.git.token}`)}` } }, now + 301_000);
-		expect(expired?.status).toBe(401);
-		expect(expired?.headers.has("www-authenticate")).toBe(true);
+		expect(expired?.status).toBe(403);
+		expect(expired?.headers.has("www-authenticate")).toBe(false);
 		expect(f.providerCalls.length).toBe(before);
 		expect(f.calls.length).toBe(callsBeforeExpiry + 1);
 	});
@@ -273,11 +276,62 @@ describe("standalone Git v2", () => {
 		const f = await fixture();
 		const response = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
 			{ headers: { authorization: `Basic ${btoa(`ezil:${"a".repeat(8192)}`)}` } });
-		expect(response?.status).toBe(401);
+		expect(response?.status).toBe(403);
+		expect(f.upstreamTokens).toEqual(["a".repeat(8192)]);
 		expect(f.calls).toEqual([`${remote}/info/refs?service=git-upload-pack`]);
 		expect(f.limitedKeys.some(key => key.startsWith("v2:git:"))).toBe(true);
 		expect(f.providerCalls).toEqual([]);
 	});
+	it("preserves an upstream 401 as a renewal challenge without minting", async () => {
+		const f = await fixture(false, 401);
+		const token = "opaque-fixture-provider-rejected-token";
+		const response = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
+			{ headers: { authorization: `Basic ${btoa(`ezil:${token}`)}` } });
+		expect(response?.status).toBe(401);
+		expect(response?.headers.has("www-authenticate")).toBe(true);
+		expect(f.upstreamTokens).toEqual([token]);
+		expect(f.providerCalls).toEqual([]);
+	});
+
+	it("uses recognized expiry hints only to challenge already-expired credentials using a fresh clock", async () => {
+		const f = await fixture();
+		const hintExpiry = Math.floor(now / 1000) + 10;
+		const token = `opaque-fixture-expiry-hint?expires=${hintExpiry}`;
+		// Even a provider-accepted token cannot bypass the conservative local expiry denial.
+		f.nativeTokens.set(token, { repo: name, scope: "read", expires: hintExpiry + 120 });
+		const response = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
+			{ headers: { authorization: `Basic ${btoa(`ezil:${token}`)}` } }, now, () => now + 20_000);
+		expect(response?.status).toBe(401);
+		expect(response?.headers.has("www-authenticate")).toBe(true);
+		expect(f.calls).toEqual([]);
+		expect(f.providerCalls).toEqual([]);
+	});
+	it("forwards missing, unknown, and future expiry hints unchanged for provider authorization", async () => {
+		const f = await fixture();
+		const expires = Math.floor(now / 1000) + 120;
+		const futureHint = `opaque-fixture-hint?expires=${expires}`;
+		const tokens = ["opaque-fixture-no-hint", "opaque-fixture-hint?expires=unknown",
+			"opaque-fixture-hint?expires=0", "opaque-fixture-hint?expires=9007199254740992", futureHint];
+		for (const token of tokens) {
+			f.nativeTokens.set(token, { repo: name, scope: "read", expires });
+			const response = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
+				{ headers: { authorization: `Basic ${btoa(`ezil:${token}`)}` } });
+			expect(response?.status).toBe(200);
+			expect(f.upstreamTokens.at(-1)).toBe(token);
+		}
+		const changedHint = futureHint.replace(String(expires), String(expires + 600));
+		const tampered = await f.send(`/default/${name}.git/info/refs?service=git-upload-pack`,
+			{ headers: { authorization: `Basic ${btoa(`ezil:${changedHint}`)}` } });
+		expect(tampered?.status).toBe(403);
+		expect(tampered?.headers.has("www-authenticate")).toBe(false);
+		expect(f.upstreamTokens.at(-1)).toBe(changedHint);
+		const scopeDenied = await f.send(`/default/${name}.git/git-receive-pack`, { method: "POST",
+			headers: { authorization: `Basic ${btoa(`ezil:${futureHint}`)}` }, body: "git-data" });
+		expect(scopeDenied?.status).toBe(403);
+		expect(scopeDenied?.headers.has("www-authenticate")).toBe(false);
+		expect(f.providerCalls).toEqual([]);
+	});
+
 	it("uses a fresh mint clock and accepts an opaque token after a one-second provider delay", async () => {
 		const f = await fixture();
 		let clock = now + 20_000;
