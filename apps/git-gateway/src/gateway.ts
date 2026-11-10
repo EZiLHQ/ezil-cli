@@ -3,6 +3,7 @@ import { GIT_DENY_MESSAGES, GIT_GRANT_PATTERN, GitAuthorizeResponseSchema, parse
 import { INSTALL_PS1, INSTALL_SH, START_SH } from "./install";
 import { splitReceivePack } from "./pkt-line";
 import { sha256Hex, signedHeaders } from "./sign";
+import { standalone, type StandaloneEnv } from "./standalone";
 
 /**
  * github.ezil.work: Git smart HTTP in front of Cloudflare Artifacts. See docs/ARCHITECTURE.md.
@@ -13,7 +14,7 @@ import { sha256Hex, signedHeaders } from "./sign";
  * and never reaches a log.
  */
 
-export interface GatewayEnv {
+export interface GatewayEnv extends StandaloneEnv {
 	readonly API_ORIGIN?: string;
 	readonly GIT_GATEWAY_SECRET?: string;
 	readonly IP_HASH_SALT?: string;
@@ -110,6 +111,8 @@ export async function handle(request: Request, env: GatewayEnv, deps: GatewayDep
 		deps.log({ ...fields, ...extra, status: response.status, durationMs: deps.now() - started });
 		return response;
 	};
+	const direct = await standalone(request, env, deps.fetch, deps.now(), deps.now);
+	if (direct) return finish(direct, { decision: "standalone" });
 
 	// Deploy probe: which commit is live, and whether the secrets it needs are bound. Never their values.
 	if (url.pathname === "/health" && request.method === "GET")

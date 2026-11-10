@@ -1,0 +1,12 @@
+{
+  "account": "2104e6f103f83b34f363985b093edc7c",
+  "namespace": "default",
+  "repo": "os-code-url-20261110-a",
+  "providerId": "fg1wtcrexaf7acl0",
+  "remote": "https://2104e6f103f83b34f363985b093edc7c.artifacts.cloudflare.net/git/default/os-code-url-20261110-a.git",
+  "seedSha": "db0072aa94dd6c4fd99a4fd258094f954075f443",
+  "firstCloneSha": "db0072aa94dd6c4fd99a4fd258094f954075f443",
+  "pushSha": "e7ee8459719a8050e4ee7e5c5672a38c5f1ffab6",
+  "freshCloneSha": "e7ee8459719a8050e4ee7e5c5672a38c5f1ffab6",
+  "verified": true
+}
