@@ -6,7 +6,8 @@ const ISSUER = "https://id.ezil.work/";
 const JWKS = `${ISSUER}.well-known/jwks.json`;
 const REMOTE = `https://${ACCOUNT}.artifacts.cloudflare.net/git/default/`;
 const REPO = /^[a-z0-9][a-z0-9._-]{0,99}$/;
-const TOKEN = /^eg2_([A-Za-z0-9_-]{1,2048})\.([A-Za-z0-9_-]{43})$/;
+// Cloudflare's documented Git token format. The provider verifies the secret and repo scope.
+const TOKEN = /^art_v1_[a-f0-9]{40}\?expires=([0-9]{10,12})$/;
 const reply = (status: number, message: string) => new Response(JSON.stringify({ error: message }),
 	{ status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 
@@ -17,7 +18,6 @@ interface KV {
 export interface StandaloneEnv {
 	STANDALONE_REPOS?: KV;
 	ARTIFACTS?: ArtifactsBinding;
-	STANDALONE_GRANT_SECRET?: string;
 	EZIL_ID_AUDIENCES?: string;
 	IP_HASH_SALT?: string;
 	CREATE_RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
@@ -33,41 +33,11 @@ interface ArtifactsBinding {
 	get(name: string): Promise<ArtifactsRepoHandle>;
 }
 export interface RepoRecord { providerId: string; ownerSub: string; publicRead: boolean }
-interface GrantClaims { v: 2; repo: string; providerId: string; sub: string; scope: "read" | "write"; iat: number; exp: number; nonce: string }
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 const hex = (bytes: Uint8Array) => Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 const bytes = (value: string) => Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
 const digest = async (value: string) => hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))));
-const base64url = (data: Uint8Array) => btoa(String.fromCharCode(...data)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
 const jwksCache = new Map<string, { key: CryptoKey; until: number }>();
-
-async function grantKey(secret: string): Promise<CryptoKey> {
-	if (!/^[a-f0-9]{64}$/.test(secret)) throw new Error("Invalid grant secret");
-	const raw = Uint8Array.from(secret.match(/../g)!, pair => parseInt(pair, 16));
-	return crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
-}
-async function signGrant(claims: GrantClaims, secret: string): Promise<string> {
-	const encoded = base64url(new TextEncoder().encode(JSON.stringify(claims)));
-	const signature = await crypto.subtle.sign("HMAC", await grantKey(secret), new TextEncoder().encode(encoded));
-	return `eg2_${encoded}.${base64url(new Uint8Array(signature))}`;
-}
-async function verifyGrant(token: string, secret: string, now: number): Promise<GrantClaims | null> {
-	try {
-		const match = TOKEN.exec(token);
-		if (!match) return null;
-		const valid = await crypto.subtle.verify("HMAC", await grantKey(secret), bytes(match[2]!), new TextEncoder().encode(match[1]!));
-		if (!valid) return null;
-		const claims = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes(match[1]!))) as GrantClaims;
-		if (Object.keys(claims).sort().join(",") !== "exp,iat,nonce,providerId,repo,scope,sub,v" || claims.v !== 2 ||
-			!REPO.test(claims.repo) || !/^[a-z0-9]{16}$/.test(claims.providerId) ||
-			typeof claims.sub !== "string" || !claims.sub ||
-			(claims.scope !== "read" && claims.scope !== "write") ||
-			!Number.isInteger(claims.iat) || !Number.isInteger(claims.exp) ||
-			claims.iat > now + 60 || claims.exp <= now || claims.exp - claims.iat > 300 ||
-			!/^([a-f0-9]{32})$/.test(claims.nonce)) return null;
-		return claims;
-	} catch { return null; }
-}
 
 class TooLarge extends Error {}
 async function smallJson(request: Request): Promise<unknown> {
@@ -163,7 +133,7 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 			registeredRaw = raw;
 		} catch { return reply(503, "Repository registry unavailable"); }
 	}
-	if (!env.STANDALONE_REPOS || !env.ARTIFACTS || !env.STANDALONE_GRANT_SECRET ||
+	if (!env.STANDALONE_REPOS || !env.ARTIFACTS ||
 		!env.EZIL_ID_AUDIENCES || !env.IP_HASH_SALT || !env.RL)
 		return reply(503, "Standalone Git is not configured");
 	if (isApi) {
@@ -211,15 +181,20 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 			using repo = await env.ARTIFACTS.get(name);
 			if (!providerMatches(await repo.info(), record, name)) return reply(403, "Repository unavailable");
 			const issued = Math.floor(now / 1000);
-			const expires = Math.min(issued + 300, principal.exp);
-			if (expires <= issued) return reply(401, "EZiL ID sign-in expired");
-			const grant = await signGrant({ v: 2, repo: name, providerId: record.providerId, sub,
-				scope: body["scope"], iat: issued, exp: expires, nonce: hex(crypto.getRandomValues(new Uint8Array(16))) },
-				env.STANDALONE_GRANT_SECRET);
+			const ttl = Math.min(300, principal.exp - issued);
+			if (ttl < 60) return reply(401, "EZiL ID sign-in expires too soon");
+			const scope = body["scope"] as "read" | "write";
+			const native = await repo.createToken(scope, ttl);
+			const nativeExpiry = TOKEN.exec(native.plaintext)?.[1];
+			const expires = nativeExpiry ? Number(nativeExpiry) : NaN;
+			if (native.scope !== scope || !Number.isSafeInteger(expires) ||
+				Date.parse(native.expiresAt) !== expires * 1000 || expires <= issued ||
+				expires > principal.exp || expires > issued + 300)
+				return reply(503, "Invalid Artifacts token");
 			return Response.json({ version: 2,
 				repository: { id: record.providerId, canonicalURL: `https://github.ezil.work/default/${name}.git`, ref: "refs/heads/main" },
 				identity: { issuer: ISSUER, subject: sub },
-				git: { username: "ezil", token: grant, expiresAt: new Date(expires * 1000).toISOString(), scope: body["scope"] } },
+				git: { username: "ezil", token: native.plaintext, expiresAt: native.expiresAt, scope } },
 				{ headers: { "cache-control": "no-store" } });
 		} catch { return reply(503, "Grant unavailable"); }
 	}
@@ -236,31 +211,23 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 	const auth = authorization.length <= 4096 ? /^Basic ([A-Za-z0-9+/=]+)$/.exec(authorization) : null;
 	let credential = "";
 	try { credential = atob(auth?.[1] ?? ""); } catch { /* deny */ }
-	const grant = credential.startsWith("ezil:") ? credential.slice(5) : "";
-	if (!TOKEN.test(grant)) return challenge();
-	const stored = await verifyGrant(grant, env.STANDALONE_GRANT_SECRET, Math.floor(now / 1000));
-	if (!stored) return challenge();
+	const token = credential.startsWith("ezil:") ? credential.slice(5) : "";
+	const expiry = TOKEN.exec(token)?.[1];
+	if (!expiry || Number(expiry) <= Math.floor(now / 1000) || Number(expiry) > Math.floor(now / 1000) + 300) return challenge();
 	try {
-		const grantHash = await digest(grant);
-		if (!(await env.RL.limit({ key: `v2:git:${grantHash}` })).success) return reply(429, "Too many Git requests");
-		if (stored.repo !== route.routeName) return reply(403, "Repository unavailable");
+		const tokenHash = await digest(token);
+		if (!(await env.RL.limit({ key: `v2:git:${tokenHash}` })).success) return reply(429, "Too many Git requests");
 		const record = await repoRecord(env, route.routeName, registeredRaw);
-		if (!record || stored.providerId !== record.providerId ||
-			(stored.sub !== record.ownerSub && !record.publicRead) ||
-			(service === "git-receive-pack" && (stored.scope !== "write" || stored.sub !== record.ownerSub))) return reply(403, "Repository unavailable");
-		using repo = await env.ARTIFACTS.get(route.routeName);
-		const provider = await repo.info();
-		if (!providerMatches(provider, record, route.routeName))
-			return reply(403, "Repository unavailable");
-		const scope = service === "git-receive-pack" ? "write" : "read";
-		const issued = await repo.createToken(scope, 300);
-		if (!issued.plaintext || issued.scope !== scope) return reply(503, "Artifacts token unavailable");
+		if (!record) return reply(403, "Repository unavailable");
 		const headers = new Headers();
 		for (const key of ["content-type", "content-encoding", "accept", "accept-encoding", "git-protocol", "user-agent"])
 			if (request.headers.has(key)) headers.set(key, request.headers.get(key)!);
-		headers.set("authorization", `Bearer ${issued.plaintext}`);
+		headers.set("authorization", `Bearer ${token}`);
 		const upstream = await fetcher(`${REMOTE}${route.routeName}.git${route.rest}${route.rest === "/info/refs" ? url.search : ""}`,
 			{ method: request.method, headers, redirect: "manual", ...(request.body ? { body: request.body, duplex: "half" } : {}) } as RequestInit);
+		if (upstream.status === 401) return challenge();
+		if (upstream.status === 403) return reply(403, "Repository unavailable");
+		if (upstream.status >= 300 && upstream.status < 400) return reply(502, "Artifacts redirect refused");
 		const out = new Headers(upstream.headers);
 		for (const key of ["set-cookie", "www-authenticate", "authorization", "proxy-authenticate"]) out.delete(key);
 		out.set("cache-control", "no-store");

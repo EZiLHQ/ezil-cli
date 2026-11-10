@@ -19,7 +19,7 @@
     { "name": "CREATE_RL", "namespace_id": "4203", "simple": { "limit": 5, "period": 60 } }
   ],
   // Secrets, set with `wrangler secret put` (never in this file): GIT_GATEWAY_SECRET, IP_HASH_SALT,
-  // STANDALONE_GRANT_SECRET (64 lowercase hex chars). Artifacts uses a native namespace binding.
+  // Artifacts uses a native namespace binding; standalone Git needs no API or signing secret.
   "env": {
     "staging": {
       "routes": [{ "pattern": "git-staging.ezil.work", "custom_domain": true }],
