@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,9 +19,13 @@ test('standalone v2 selects full branch despite different remote HEAD/same-name 
   writeFileSync(join(bin,'git'),`#!/usr/bin/env node\nconst cp=require('node:child_process');const args=process.argv.slice(2);const clone=args.includes('clone');if(clone)args[args.indexOf(${JSON.stringify(url)})]=${JSON.stringify(remote)};let r=cp.spawnSync(${JSON.stringify(git)},args,{stdio:'inherit'});if(clone&&r.status===0)r=cp.spawnSync(${JSON.stringify(git)},['-C',args.at(-1),'remote','set-url','origin',${JSON.stringify(url)}],{stdio:'inherit'});process.exit(r.status??1);\n`,{mode:0o700});
   async function open(ref:string,dest=folder){
    const packet={version:2,repository:{id:'cf-repo-fixture',canonicalURL:url,ref},identity:{issuer:'https://id.ezil.work/',subject:'auth0|fixture'},git:{username:'ezil',token:'v2_synthetic_private_token',expiresAt:new Date(Date.now()+60000).toISOString(),scope:'read'}};
-   const child=spawn(process.env['EZIL_TEST_CLI_RUNTIME']??process.execPath,[process.env['EZIL_TEST_CLI_ENTRY']??join(import.meta.dir,'../../../bin/ezil.ts'),'clone',url,'--directory',dest,'--json','--grant-fd=3'],{env:{...process.env,PATH:bin+':'+process.env['PATH'],EZIL_HOME:join(root,'empty-auth'),EZIL_CLI_STORE:'file'},stdio:['ignore','pipe','pipe','pipe']});
-   let stdout='',stderr='';child.stdout!.on('data',c=>stdout+=c);child.stderr!.on('data',c=>stderr+=c);(child.stdio[3] as import('node:stream').Writable).end(JSON.stringify(packet));
-   const code=await new Promise(resolve=>child.on('close',resolve));expect(stdout+stderr).not.toContain(packet.git.token);return {code,value:JSON.parse(stdout)};
+   // Isolate child stdio collection from Bun 1.3.14's asynchronous pipe EOF
+   // bookkeeping after the cancellation suites. The supervisor passes the
+   // packet only through anonymous stdin and the CLI's inherited descriptor 3.
+   const supervisor = `const cp=require('node:child_process'),fs=require('node:fs');const child=cp.spawn(process.argv[1],[process.argv[2],'clone',process.argv[3],'--directory',process.argv[4],'--json','--grant-fd=3'],{stdio:['ignore','pipe','pipe','pipe']});child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);child.on('error',()=>{process.exitCode=1});child.on('close',code=>{process.exitCode=code??1});child.stdio[3].end(fs.readFileSync(0));`;
+   const child=spawnSync('node',['-e',supervisor,process.env['EZIL_TEST_CLI_RUNTIME']??process.execPath,process.env['EZIL_TEST_CLI_ENTRY']??join(import.meta.dir,'../../../bin/ezil.ts'),url,dest],{env:{...process.env,PATH:bin+':'+process.env['PATH'],EZIL_HOME:join(root,'empty-auth'),EZIL_CLI_STORE:'file'},input:JSON.stringify(packet),encoding:'utf8',timeout:5000});
+   if(child.error) throw child.error;
+   expect(child.stdout+child.stderr).not.toContain(packet.git.token);return {code:child.status,value:JSON.parse(child.stdout)};
   }
   expect(run('--git-dir',remote,'symbolic-ref','HEAD')).toBe('refs/heads/main');
   const first=await open('refs/heads/topic');expect(first.value.status).toBe('cloned');expect(first.value.repository).toEqual({id:'cf-repo-fixture',canonicalURL:url,ref:'refs/heads/topic'});expect(first.value.identity).toEqual({issuer:'https://id.ezil.work/',subject:'auth0|fixture'});expect(first.value.folder).toBe(folder);expect(first.value).not.toHaveProperty('accountId');
