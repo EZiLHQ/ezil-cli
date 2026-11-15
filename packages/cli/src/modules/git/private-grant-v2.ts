@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 export interface StandaloneRepository { id: string; canonicalURL: string; ref: string }
 export interface StandaloneIdentity { issuer: "https://id.ezil.work/"; subject: string }
 export interface StandaloneGrant { username: "ezil"; password: string; password_expiry_utc: number; scope: "read" | "write" }
+export interface GitAuthor { name: string; email: string }
 export const PRIVATE_GRANT_MAX_BYTES = 16384;
 export const PRIVATE_GRANT_MAX_LIFETIME_MS = 300000;
 
@@ -23,6 +24,21 @@ function exact(value: unknown, keys: string[]): value is Record<string, unknown>
 }
 function opaqueId(value: unknown): value is string {
  return typeof value === "string" && value.length > 0 && value.length <= 255 && !/[\s\x00-\x1f\x7f]/u.test(value);
+}
+/** OS-only metadata arrives on the same private descriptor; gateway v2 remains exact. */
+export function validateStandaloneInput(value: unknown, canonicalURL: string, now = Date.now()) {
+ if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid private input");
+ const input = value as Record<string, unknown>;
+ if (Object.keys(input).some(key => !["version", "repository", "identity", "git", "gitAuthor", "refreshOnly", "gitAccess"].includes(key))) throw new Error("invalid private input");
+ const { gitAuthor, refreshOnly, gitAccess, ...packet } = input;
+ if (refreshOnly !== undefined && refreshOnly !== true) throw new Error("invalid refresh");
+ if (gitAccess !== undefined && gitAccess !== true) throw new Error("invalid Git access policy");
+ if (gitAuthor !== undefined && (!exact(gitAuthor, ["name", "email"])
+  || typeof gitAuthor["name"] !== "string" || gitAuthor["name"] !== gitAuthor["name"].trim()
+  || !gitAuthor["name"].length || gitAuthor["name"].length > 128 || /[\x00-\x1f\x7f<>]/.test(gitAuthor["name"])
+  || typeof gitAuthor["email"] !== "string" || gitAuthor["email"].length > 254
+  || !/^[^\s@<>\x00-\x1f\x7f]+@[^\s@<>\x00-\x1f\x7f]+$/u.test(gitAuthor["email"]))) throw new Error("invalid Git author");
+ return { ...validatePrivateGrant(packet, canonicalURL, now), packet, gitAuthor: gitAuthor as GitAuthor | undefined, refreshOnly: refreshOnly === true, gitAccess: gitAccess === true };
 }
 /** Strict v2 only. Cloudflare repository ID and EZiL issuer/subject are independent of Works. */
 export function validatePrivateGrant(value: unknown, canonicalURL: string, now = Date.now()): {repository: StandaloneRepository; identity: StandaloneIdentity; grant: StandaloneGrant} {

@@ -34,6 +34,14 @@ test("SIGTERM cancels a stalled private pipe before creating destination state",
  finally{killGroup(p.child,"SIGKILL");rmSync(root,{recursive:true,force:true});}
 },10000);
 
+test("OS refresh-only request never clones an unopened checkout",async()=>{
+ const root=mkdtempSync(join(tmpdir(),"v2-refresh-missing-"));const p=launch(root);
+ try {
+  (p.child.stdio[3] as Writable).end(JSON.stringify({...packet(),gitAccess:true,refreshOnly:true}));
+  const result=await p.done;expect(result.code).toBe(2);expect(JSON.parse(result.stdout).error.code).toBe("repository-not-open");expect(readdirSync(root)).toEqual([]);
+ } finally {killGroup(p.child,"SIGKILL");rmSync(root,{recursive:true,force:true});}
+},10000);
+
 for(const signal of ["SIGTERM","SIGINT"] as const)test(`${signal} cancels real Git waiting on HTTP and cleans owned state`,async()=>{
  const root=mkdtempSync(join(tmpdir(),"v2-git-cancel-"));const realGit=Bun.which("git")!;let requested=false;
  const server=Bun.serve({hostname:"127.0.0.1",port:0,fetch(){requested=true;return new Promise<Response>(()=>{});}});

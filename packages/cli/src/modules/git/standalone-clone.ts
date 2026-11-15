@@ -3,10 +3,11 @@ import { lstatSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync,
 import { setTimeout as delay } from "node:timers/promises";
 import { basename, dirname, isAbsolute, join, parse, resolve } from "node:path";
 import { CloneRecoveryRequired, cloneWithGrant, type CloneTransport, type CloneGrant } from "./clone-transport";
-import { canonicalRepository, readPrivateGrant, validatePrivateGrant } from "./private-grant-v2";
+import { canonicalRepository, readPrivateGrant, validateStandaloneInput } from "./private-grant-v2";
+import { installStandaloneAccess, type StandaloneAccessOptions } from "./standalone-access";
 
 export interface StandaloneIo { out(line: string): void; run(command: string[]): { code: number; stdout: string } }
-export interface StandaloneCloneOptions { grantFd: number; directory: string; json: true; signal?: AbortSignal }
+export interface StandaloneCloneOptions { grantFd: number; directory: string; json: true; signal?: AbortSignal; access?: StandaloneAccessOptions }
 class CloneError extends Error {
  readonly code: string;
  readonly exit: number;
@@ -58,7 +59,7 @@ function verifyCheckoutRef(io: StandaloneIo, folder: string, ref: string, fresh:
     }
 }
 
-async function openRepository(io: StandaloneIo, canonicalUrl: string, folder: string, authorize: () => Promise<CloneGrant>, transport: CloneTransport, signal?: AbortSignal, authoritativeRef?: string): Promise<"cloned" | "reused"> {
+async function openRepository(io: StandaloneIo, canonicalUrl: string, folder: string, authorize: () => Promise<CloneGrant>, transport: CloneTransport, signal?: AbortSignal, authoritativeRef?: string, refreshOnly = false): Promise<"cloned" | "reused"> {
 	safeFolder(folder);
 	const lock = join(dirname(folder), `.${basename(folder)}.ezil-clone-lock`);
 	const deadline = Date.now() + 30_000;
@@ -95,6 +96,7 @@ async function openRepository(io: StandaloneIo, canonicalUrl: string, folder: st
 			signal?.throwIfAborted();
 			return "reused";
 		}
+        if (refreshOnly) fail("repository-not-open", "Open this repository before refreshing Git access.", 2);
 		temporary = mkdtempSync(join(dirname(folder), ".ezil-clone-"));
 		ownedTemporary = lstatSync(temporary);
 		const checkout = join(temporary, "checkout");
@@ -140,16 +142,19 @@ export async function standaloneClone(repository: string, options: StandaloneClo
    fail("invalid-directory", "Directory must be an absolute destination without traversal.", 2);
   }
   let packet: unknown;
-  try { packet = await readPrivateGrant(options.grantFd, signal); validatePrivateGrant(packet, repository); }
+  try { packet = await readPrivateGrant(options.grantFd, signal); validateStandaloneInput(packet, repository); }
   catch { fail("repository-not-authorized", "Invalid or expired repository grant.", 2); }
   const authorize = async (): Promise<CloneGrant> => {
    signal?.throwIfAborted();
-   try { return validatePrivateGrant(packet, repository).grant; }
+   try { return validateStandaloneInput(packet, repository).grant; }
    catch { fail("repository-not-authorized", "Invalid or expired repository grant.", 2); }
   };
   const folder = resolve(options.directory);
-  const approved = validatePrivateGrant(packet, repository);
-  const status = await openRepository(io, repository, folder, authorize, transport, signal, approved.repository.ref);
+  const approved = validateStandaloneInput(packet, repository);
+  const status = await openRepository(io, repository, folder, authorize, transport, signal, approved.repository.ref, approved.refreshOnly);
+  // The original four-key v2 contract is a clone-only operation. The OS opts in
+  // to renewable Code access with its private access/author/refresh metadata.
+  if (approved.gitAccess || approved.gitAuthor || approved.refreshOnly) installStandaloneAccess(folder, packet, options.access);
   signal?.throwIfAborted();
   io.out(JSON.stringify({canonicalUrl: repository, folder, repository: approved.repository, identity: approved.identity, status}));
   return 0;

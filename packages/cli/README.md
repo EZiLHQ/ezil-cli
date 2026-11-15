@@ -149,3 +149,22 @@ connect is a change to their tree, and this tool does not make one.
 ```bash
 bun test --no-env-file packages/cli   # from the repository root
 ```
+# EZiL OS standalone Git workspaces
+
+The OS passes the gateway's exact v2 grant over anonymous descriptor 3. At its
+trusted handoff it can add `gitAccess: true`, a verified `gitAuthor: {name,email}`,
+and `refreshOnly: true`. These fields are OS bootstrap metadata, not additions to
+the gateway response. The original four-key grant remains a clone-only operation.
+
+Code access configures the repository's own author when it is missing, preserves
+an explicit local author, and installs a fixed CLI credential helper. The grant
+lives only in an owner-only `/run/ezil/git/standalone` file, bound to its exact
+repository URL, provider ID and signed-in subject. No token is written in the
+checkout or Git configuration. A different account cannot replace that binding.
+
+The OS renews access while Code is open. Renewal requires an existing matching
+checkout and never clones, fetches, resets, stages or commits files. Expired access
+fails closed. A public repository's read grant does not confer push permission;
+Artifacts enforces the scope issued for the signed-in account. Local Git config
+includes require manual setup because another included helper could otherwise
+receive the private grant during Git's credential `store` step.

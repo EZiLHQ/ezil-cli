@@ -31,6 +31,7 @@ import { login, logout, sessions, whoami } from "../src/core/auth";
 import type { Io } from "../src/core/session";
 import { clone } from "../src/modules/git/clone";
 import { standaloneClone } from "../src/modules/git/standalone-clone";
+import { standaloneCredential } from "../src/modules/git/standalone-access";
 import { withCloneSignals } from "../src/modules/git/clone-cancellation";
 import { gitCredential, gitSetup } from "../src/modules/git/credential";
 
@@ -215,6 +216,16 @@ async function main(): Promise<number> {
 		return result.outcomes.some((outcome) => outcome.kind !== "filed" && outcome.kind !== "quarantined") ? 1 : 0;
 	}
 
+	if (command === "standalone-git-credential") {
+        // The helper never reads legacy CLI login state or prints diagnostics containing a grant.
+        let input = "";
+        for await (const chunk of process.stdin) {
+            input += chunk.toString();
+            if (input.length > 4096) { process.stdout.write("quit=true\n\n"); return 0; }
+        }
+        process.stdout.write(standaloneCredential(argv[1] ?? "", input));
+        return 0;
+    }
 	if (command === "git-credential") {
 		const chunks: Uint8Array[] = [];
 		for await (const chunk of process.stdin) chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : new Uint8Array(chunk));
