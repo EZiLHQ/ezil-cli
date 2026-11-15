@@ -74,6 +74,36 @@ async function fixture(limitIp = false, invalidStatus = 403) {
 }
 
 describe("standalone Git v2", () => {
+	it("grants an explicit writer only this repository, preserving its owner and public readers", async () => {
+		const f = await fixture();
+		const record = JSON.parse(f.records.get(`repo:default/${name}`)!);
+		f.records.set(`repo:default/${name}`, JSON.stringify({ ...record, writerSubs: ["auth0|verified-contact"] }));
+		const ask = async (sub: string, repoURL = url, scope = "write") => f.send("/v2/git/grant", {
+			method: "POST", headers: { authorization: `Bearer ${await f.jwt(sub)}` }, body: JSON.stringify({ repoURL, scope }) });
+		expect((await ask("auth0|verified-contact"))?.status).toBe(200);
+		expect((await ask("auth0|owner"))?.status).toBe(200);
+		expect((await ask("contact@ezil.work"))?.status).toBe(403);
+		expect((await ask("auth0|other"))?.status).toBe(403);
+		expect((await ask("auth0|other", url, "read"))?.status).toBe(200);
+		f.records.set("repo:default/other", JSON.stringify(record));
+		expect((await ask("auth0|verified-contact", "https://github.ezil.work/default/other.git"))?.status).toBe(403);
+		f.records.set(`repo:default/${name}`, JSON.stringify(record));
+		expect((await ask("auth0|verified-contact"))?.status).toBe(403);
+	});
+	it("lets a private repository collaborator read and rejects malformed collaborator registries", async () => {
+		const f = await fixture();
+		const record = JSON.parse(f.records.get(`repo:default/${name}`)!);
+		const token = await f.jwt("auth0|verified-contact");
+		const ask = () => f.send("/v2/git/grant", { method: "POST", headers: { authorization: `Bearer ${token}` },
+			body: JSON.stringify({ repoURL: url, scope: "read" }) });
+		f.records.set(`repo:default/${name}`, JSON.stringify({ ...record, publicRead: false, writerSubs: ["auth0|verified-contact"] }));
+		expect((await ask())?.status).toBe(200);
+		for (const writerSubs of ["auth0|verified-contact", ["auth0|verified-contact", "auth0|verified-contact"], ["bad\nsubject"],
+			[null], Array.from({ length: 33 }, (_, index) => `auth0|${index}`)]) {
+			f.records.set(`repo:default/${name}`, JSON.stringify({ ...record, writerSubs }));
+			expect((await ask())?.status).toBe(403);
+		}
+	});
 	it("mints the exact owner packet and proxies a scoped push without contacting Works", async () => {
 		const f = await fixture();
 		const token = await f.jwt("auth0|owner");

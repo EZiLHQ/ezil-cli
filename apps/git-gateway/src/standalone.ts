@@ -44,7 +44,11 @@ interface ArtifactsBinding {
 		id: string; name: string; remote: string; defaultBranch: string; token: string }>;
 	get(name: string): Promise<ArtifactsRepoHandle>;
 }
-export interface RepoRecord { providerId: string; ownerSub: string; publicRead: boolean }
+export interface RepoRecord {
+	providerId: string; ownerSub: string; publicRead: boolean;
+	/** Explicit repository collaborators, maintained by the authorized registry operator. */
+	writerSubs?: string[];
+}
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 const hex = (bytes: Uint8Array) => Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 const bytes = (value: string) => Uint8Array.from(atob(value.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
@@ -148,6 +152,9 @@ async function repoRecord(env: StandaloneEnv, name: string, suppliedRaw?: string
 	let record: RepoRecord;
 	try { record = JSON.parse(raw) as RepoRecord; } catch { return null; }
 	if (!/^[a-z0-9]{16}$/.test(record.providerId) || !record.ownerSub || typeof record.publicRead !== "boolean") return null;
+	if (record.writerSubs !== undefined && (!Array.isArray(record.writerSubs) || record.writerSubs.length > 32 ||
+		!record.writerSubs.every(sub => typeof sub === "string" && /^[^\s\x00-\x1f\x7f]{1,255}$/u.test(sub)) ||
+		new Set(record.writerSubs).size !== record.writerSubs.length)) return null;
 	return record;
 }
 function providerMatches(provider: Awaited<ReturnType<ArtifactsRepoHandle["info"]>>, record: RepoRecord, name: string): boolean {
@@ -221,7 +228,8 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		let phase: GrantPhase = "registry_lookup";
 		try {
 			const record = await repoRecord(env, name);
-			if (!record || (record.ownerSub !== sub && (body["scope"] === "write" || !record.publicRead))) return reply(403, "Repository unavailable");
+			const writer = record && (record.ownerSub === sub || record.writerSubs?.includes(sub) === true);
+			if (!record || (!writer && (body["scope"] === "write" || !record.publicRead))) return reply(403, "Repository unavailable");
 			phase = "repository_get";
 			using repo = await env.ARTIFACTS.get(name);
 			phase = "repository_info";
