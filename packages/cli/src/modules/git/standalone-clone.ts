@@ -47,9 +47,16 @@ function safeFolder(folder: string): void {
 }
 
 /** A ref mismatch never changes a checkout, including dirty files or local commits. */
-function verifyCheckoutRef(io: StandaloneIo, folder: string, ref: string, fresh: boolean): void {
+function verifyCheckoutRef(io: StandaloneIo, folder: string, ref: string, fresh: boolean, unborn = false): void {
     const head = io.run(["git", "-C", folder, "symbolic-ref", "--quiet", "HEAD"]);
     if (head.code !== 0 || head.stdout.trim() !== ref) fail("repository-ref-mismatch", "Checkout does not match the authorized branch. Existing files were preserved.", 2);
+    if (unborn) {
+        const refs = io.run(["git", "-C", folder, "for-each-ref", "--count=1", "--format=%(refname)"]);
+        if (ref !== "refs/heads/main" || refs.code !== 0 || refs.stdout.trim() !== "") {
+            fail("repository-ref-mismatch", "Checkout does not match the authorized empty repository.", 2);
+        }
+        return;
+    }
     if (fresh) {
         const local = io.run(["git", "-C", folder, "rev-parse", "--verify", `${ref}^{commit}`]);
         const remote = io.run(["git", "-C", folder, "rev-parse", "--verify", `refs/remotes/origin/${ref.slice("refs/heads/".length)}^{commit}`]);
@@ -103,8 +110,8 @@ async function openRepository(io: StandaloneIo, canonicalUrl: string, folder: st
 		const grant = await authorize();
 		const code = await transport(canonicalUrl, checkout, grant, signal, authoritativeRef);
 		signal?.throwIfAborted();
-		if (code !== 0) fail("clone-failed", "Could not clone the repository. Check Git and your repository access, then try again.");
-		if (authoritativeRef) verifyCheckoutRef(io, checkout, authoritativeRef, true);
+		if (code !== 0 && code !== "unborn") fail("clone-failed", "Could not clone the repository. Check Git and your repository access, then try again.");
+		if (authoritativeRef) verifyCheckoutRef(io, checkout, authoritativeRef, true, code === "unborn");
 		safeFolder(folder);
 		// Exclusive reservation prevents replacing a destination created during the clone.
 		try { mkdirSync(folder, { mode: 0o700 }); } catch { fail("destination-conflict", "Destination appeared during clone; nothing was replaced."); }
