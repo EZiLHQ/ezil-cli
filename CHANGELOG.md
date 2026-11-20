@@ -14,6 +14,14 @@
 All notable changes to this project are recorded here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-20
+
+### Added
+- Standalone repository opening in EZiL OS with repository-scoped Git access and credential renewal.
+
+### Fixed
+- Open a verified empty EZiL repository in Code and prepare its first commit and push. Preserve existing files and local Git state on reopen.
+
 ## [0.2.0] - 2026-10-21
 
 ### Added
