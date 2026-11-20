@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.0-standalone.20261120.2
+
+- Renew repository-scoped Git access on the current Code branch while preserving local changes and commits.
+
 ## 0.3.0-standalone.20261110.1
 
 - Accept opaque native Git passwords containing `?expires=` while preserving size, control, whitespace, and colon guards.
