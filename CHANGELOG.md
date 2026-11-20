@@ -21,6 +21,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 - Open a verified empty EZiL repository in Code and prepare its first commit and push. Preserve existing files and local Git state on reopen.
+- Renew Git access from the current Code branch while preserving local changes and commits.
 
 ## [0.2.0] - 2026-10-21
 
