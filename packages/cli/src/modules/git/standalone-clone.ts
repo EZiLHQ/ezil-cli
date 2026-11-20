@@ -99,7 +99,8 @@ async function openRepository(io: StandaloneIo, canonicalUrl: string, folder: st
 				fail("destination-conflict", "Destination is not a matching checkout.");
 			}
 			await authorize();
-            if (authoritativeRef) verifyCheckoutRef(io, folder, authoritativeRef, false);
+			// Refresh renews access to this repository while Code may be on another branch.
+			if (!refreshOnly && authoritativeRef) verifyCheckoutRef(io, folder, authoritativeRef, false);
 			signal?.throwIfAborted();
 			return "reused";
 		}

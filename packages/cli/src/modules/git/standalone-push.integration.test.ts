@@ -16,6 +16,7 @@ test("OS author and renewable repository credentials support a real commit and a
  const root = mkdtempSync(join(tmpdir(), "ezil-standalone-push-"));
  const checkout = join(root, "checkout"), repositories = join(root, "repos"), bare = join(repositories, "default", "example.git");
  const runtimeRoot = join(root, "runtime"), globalConfig = join(root, "global.gitconfig"), leaked = join(root, "helper-leak");
+ const feature = "qa/repo-renewal";
  const sockets = new Set<Socket>();
  const children = new Set<ReturnType<typeof spawn>>();
  const env = {...cleanEnv(), GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: globalConfig, GIT_TERMINAL_PROMPT: "0"};
@@ -24,8 +25,8 @@ test("OS author and renewable repository credentials support a real commit and a
   if (result.status !== 0) throw new Error(`fixture git ${args[0]} failed: ${result.stderr}`);
   return result.stdout.trim();
  };
- const push = () => new Promise<{code:number; output:string}>((done, reject) => {
-  const child = spawn("git", ["-C", checkout, "push", "origin", "HEAD:refs/heads/main"], {env, stdio:["ignore", "pipe", "pipe"]});
+ const push = (branch = "main") => new Promise<{code:number; output:string}>((done, reject) => {
+  const child = spawn("git", ["-C", checkout, "push", "origin", `HEAD:refs/heads/${branch}`], {env, stdio:["ignore", "pipe", "pipe"]});
   children.add(child);
   let output = "";
   child.stdout!.on("data", chunk => output += chunk.toString());
@@ -117,11 +118,32 @@ test("OS author and renewable repository credentials support a real commit and a
   git(checkout, "config", "http.version", "HTTP/1.1");
   const entry = join(root,"helper-entry.ts"), bundle = join(root,"helper.mjs");
   writeFileSync(entry, `import {standaloneCredential} from ${JSON.stringify(resolve(import.meta.dir,"standalone-access.ts"))};\n`
-   + `let input="";for await(const chunk of process.stdin)input+=chunk;process.stdout.write(standaloneCredential(process.argv[3],input,{runtimeRoot:${JSON.stringify(runtimeRoot)}}));\n`);
+   + `import {standaloneClone} from ${JSON.stringify(resolve(import.meta.dir,"standalone-clone.ts"))};\n`
+   + `const runtimeRoot=${JSON.stringify(runtimeRoot)};\n`
+   + `if(process.argv[2]==="refresh"){\n`
+   + ` process.exitCode=await standaloneClone(${JSON.stringify(URL)},{directory:process.argv[3],grantFd:3,json:true,access:{runtimeRoot}},line=>console.log(line));\n`
+   + `}else{\n`
+   + ` let input="";for await(const chunk of process.stdin)input+=chunk;process.stdout.write(standaloneCredential(process.argv[3],input,{runtimeRoot}));\n`
+   + `}\n`);
   const built = await Bun.build({entrypoints:[entry], target:"node", format:"esm"});
   expect(built.success).toBe(true);
   writeFileSync(bundle,Buffer.from(await built.outputs[0]!.arrayBuffer()));
-  const node = spawnSync("node", ["-p", "process.execPath"], {encoding:"utf8"}).stdout.trim();
+  const node = spawnSync(process.env["EZIL_TEST_CLI_RUNTIME"] ?? "node", ["-p", "process.execPath"], {encoding:"utf8"}).stdout.trim();
+  // Use the actual anonymous grant FD, under the same Node runtime as the credential helper.
+  const supervisor = "const cp=require('node:child_process'),fs=require('node:fs');" +
+   "const [node,entry,folder]=process.argv.slice(1);" +
+   "const child=cp.spawn(node,[entry,'refresh',folder],{stdio:['ignore','pipe','pipe','pipe']});" +
+   "child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);" +
+   "child.on('error',()=>{process.exitCode=1});child.on('close',code=>{process.exitCode=code??1});" +
+   "child.stdio[3].end(fs.readFileSync(0));";
+  const refresh = (folder:string, accessGrant:{git:{token:string}}) => {
+   const child = spawnSync(node,["-e",supervisor,node,bundle,folder],{
+    env,input:JSON.stringify(accessGrant),encoding:"utf8",timeout:5000,
+   });
+   if (child.error) throw child.error;
+   expect(child.stdout+child.stderr).not.toContain(accessGrant.git.token);
+   return {code:child.status,value:JSON.parse(child.stdout)};
+  };
   // These helpers would copy Git's store input, including its password, if a reset were missing.
   const malicious = `!f() { cat >> '${leaked}'; }; f`;
   git(root, "config", "--file", globalConfig, "--add", "credential.helper", malicious);
@@ -148,10 +170,15 @@ test("OS author and renewable repository credentials support a real commit and a
   expect(authorized).toContain(firstToken);
   expect(existsSync(leaked)).toBe(false);
   expect(readFileSync(join(checkout,".git","config"),"utf8")).not.toContain(firstToken);
+  git(checkout,"switch","-c",feature);
   writeFileSync(join(checkout,"README.md"),"Second committed change\n");
   git(checkout,"add","README.md"); git(checkout,"commit","-m","Renewed OS push");
   const second = git(checkout,"rev-parse","HEAD");
   writeFileSync(join(checkout,"dirty.txt"),"Uncommitted work survives renewal\n");
+  writeFileSync(join(checkout,"staged.txt"),"Staged work survives renewal\n");
+  git(checkout,"add","staged.txt");
+  writeFileSync(join(checkout,"README.md"),"Unstaged work survives renewal\n");
+  const index = git(checkout,"write-tree");
   const dirty = git(checkout,"status","--porcelain");
   const readToken = "integration-read-grant-0000002";
   installStandaloneAccess(checkout,{...packet(readToken,"read"),refreshOnly:true},options);
@@ -164,13 +191,31 @@ test("OS author and renewable repository credentials support a real commit and a
   expect((await push()).code).not.toBe(0);
   expect(git(bare,"rev-parse","refs/heads/main")).toBe(first);
   const renewedToken = "integration-renewed-write-00003";
-  installStandaloneAccess(checkout,{...packet(renewedToken),refreshOnly:true},options);
+  const renewed = {...packet(renewedToken),refreshOnly:true};
+  const absent = join(root,"absent");
+  const absentResult = refresh(absent,renewed);
+  expect(absentResult.code).toBe(2);
+  expect(absentResult.value.error.code).toBe("repository-not-open");
+  expect(existsSync(absent)).toBe(false);
+  git(checkout,"remote","set-url","origin","https://github.ezil.work/default/other.git");
+  const foreign = refresh(checkout,renewed);
+  expect(foreign.code).toBe(1);
+  expect(foreign.value.error.code).toBe("destination-conflict");
+  git(checkout,"remote","set-url","origin",URL);
+  expect(JSON.parse(readFileSync(state,"utf8")).git.expiresAt).toBe(expired.git.expiresAt);
+  const renewedResult = refresh(checkout,renewed);
+  expect(renewedResult).toMatchObject({code:0,value:{status:"reused",repository:{ref:"refs/heads/main"}}});
+  expect(git(checkout,"symbolic-ref","HEAD")).toBe(`refs/heads/${feature}`);
+  expect(git(checkout,"rev-parse","HEAD")).toBe(second);
+  expect(git(checkout,"write-tree")).toBe(index);
   expect(git(checkout,"status","--porcelain")).toBe(dirty);
   expect(readFileSync(join(checkout,"dirty.txt"),"utf8")).toBe("Uncommitted work survives renewal\n");
-  const renewedPush = await push();
+  expect(readFileSync(join(checkout,"README.md"),"utf8")).toBe("Unstaged work survives renewal\n");
+  const renewedPush = await push(feature);
   expect(renewedPush.code,renewedPush.output).toBe(0);
-  expect(git(bare,"rev-parse","refs/heads/main")).toBe(second);
-  expect(git(bare,"show","-s","--format=%an <%ae>","main")).toBe("contact <contact@ezil.work>");
+  expect(git(bare,"rev-parse",`refs/heads/${feature}`)).toBe(second);
+  expect(git(bare,"rev-parse","refs/heads/main")).toBe(first);
+  expect(git(bare,"show","-s","--format=%an <%ae>",feature)).toBe("contact <contact@ezil.work>");
   expect(authorized).toContain(renewedToken);
   expect(readFileSync(join(checkout,".git","config"),"utf8")).not.toContain(renewedToken);
   expect(existsSync(leaked)).toBe(false);
