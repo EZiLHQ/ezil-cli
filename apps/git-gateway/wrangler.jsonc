@@ -12,7 +12,10 @@
   ],
   "vars": { "API_ORIGIN": "https://api.ezil.work", "EZIL_ID_AUDIENCES": "2tVk0vvzQvm964BtGuXzQxpjlo2JCoCl,Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx" },
   "kv_namespaces": [{ "binding": "STANDALONE_REPOS", "id": "26c715893bab478ca4a1bd5a62f57107" }],
-  "artifacts": [{ "binding": "ARTIFACTS", "namespace": "default" }],
+  "artifacts": [
+    { "binding": "ARTIFACTS", "namespace": "default" },
+    { "binding": "BUILDER_ARTIFACTS", "namespace": "universe-builder-production" }
+  ],
   // Per grant and per IP hash (gateway.ts). Bindings are not inherited by environments, so staging repeats it.
   "ratelimits": [
     { "name": "RL", "namespace_id": "4201", "simple": { "limit": 120, "period": 60 } },

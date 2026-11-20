@@ -1,10 +1,14 @@
 /** Standalone Git for the default Artifacts namespace. No project or task service participates. */
 import { parseGitRoutePath } from "@ezil/cli-contract/git-gateway";
+import { PRODUCTION_GIT_ORIGIN, PRODUCTION_WORKS_ORIGIN, UNIVERSE_PRODUCTION_AUDIENCE,
+	isUniverseRepositoryName, provisionUniverseRepository, universeRepositoryDescription, UNIVERSE_REPOSITORY_NAMESPACE,
+	UNIVERSE_REPOSITORY_PATH } from "./universe-repository";
 
 const ACCOUNT = "2104e6f103f83b34f363985b093edc7c";
 const ISSUER = "https://id.ezil.work/";
 const JWKS = `${ISSUER}.well-known/jwks.json`;
 const REMOTE = `https://${ACCOUNT}.artifacts.cloudflare.net/git/default/`;
+const BUILDER_REMOTE = `https://${ACCOUNT}.artifacts.cloudflare.net/git/${UNIVERSE_REPOSITORY_NAMESPACE}/`;
 const REPO = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 // Native credentials are opaque: validate transport bounds, never a provider-specific prefix.
 function safeNativeToken(value: unknown): value is string {
@@ -28,24 +32,26 @@ interface KV {
 	put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
 }
 export interface StandaloneEnv {
+	readonly API_ORIGIN?: string;
 	STANDALONE_REPOS?: KV;
 	ARTIFACTS?: ArtifactsBinding;
+	BUILDER_ARTIFACTS?: ArtifactsBinding;
 	EZIL_ID_AUDIENCES?: string;
 	IP_HASH_SALT?: string;
 	CREATE_RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
 	RL?: { limit(options: { key: string }): Promise<{ success: boolean }> };
 }
 interface ArtifactsRepoHandle extends Disposable {
-	info(): Promise<{ id: string; name: string; remote: string; defaultBranch: string; readOnly: boolean }>;
+	info(): Promise<{ id: string; name: string; remote: string; defaultBranch: string; readOnly: boolean; description?: string | null }>;
 	createToken(scope: "read" | "write", ttl: number): Promise<{ plaintext: string; scope: "read" | "write"; expiresAt: string }>;
 }
 interface ArtifactsBinding {
-	create(name: string, options: { readOnly: boolean; setDefaultBranch: string }): Promise<{
-		id: string; name: string; remote: string; defaultBranch: string; token: string }>;
+	create(name: string, options: { readOnly: boolean; setDefaultBranch: string; description?: string }): Promise<{
+		id: string; name: string; remote: string; defaultBranch: string; token: string; description?: string | null }>;
 	get(name: string): Promise<ArtifactsRepoHandle>;
 }
 export interface RepoRecord {
-	providerId: string; ownerSub: string; publicRead: boolean;
+	providerId: string; ownerSub: string; publicRead: boolean; universeProjectId?: string;
 	/** Explicit repository collaborators, maintained by the authorized registry operator. */
 	writerSubs?: string[];
 }
@@ -157,8 +163,9 @@ async function repoRecord(env: StandaloneEnv, name: string, suppliedRaw?: string
 		new Set(record.writerSubs).size !== record.writerSubs.length)) return null;
 	return record;
 }
-function providerMatches(provider: Awaited<ReturnType<ArtifactsRepoHandle["info"]>>, record: RepoRecord, name: string): boolean {
-	return provider.id === record.providerId && provider.name === name && provider.remote === `${REMOTE}${name}.git` &&
+function providerMatches(provider: Awaited<ReturnType<ArtifactsRepoHandle["info"]>>,
+	record: RepoRecord, name: string, remoteBase: string): boolean {
+	return provider.id === record.providerId && provider.name === name && provider.remote === `${remoteBase}${name}.git` &&
 		provider.defaultBranch === "main" && provider.readOnly === false;
 }
 function pathOf(value: unknown): string | null {
@@ -171,15 +178,23 @@ function pathOf(value: unknown): string | null {
 export async function standalone(request: Request, env: StandaloneEnv, fetcher: Fetch,
 	now = Date.now(), clock: () => number = Date.now): Promise<Response | null> {
 	const url = new URL(request.url);
-	const isApi = url.pathname === "/v2/repos" || url.pathname === "/v2/git/grant";
+	const isUniverseCreate = url.pathname === UNIVERSE_REPOSITORY_PATH;
+	const production = url.origin === PRODUCTION_GIT_ORIGIN && env.API_ORIGIN === PRODUCTION_WORKS_ORIGIN;
+	if (isUniverseCreate && !production) return reply(404, "Not found");
+	const isCreate = isUniverseCreate || url.pathname === "/v2/repos";
+	const isApi = isCreate || url.pathname === "/v2/git/grant";
 	const route = parseGitRoutePath(url.pathname);
 	if (!isApi && (!route || route.routeNamespace !== "default" || route.rest === "")) return null;
+	const universeGit = !isApi && route !== null && isUniverseRepositoryName(route.routeName);
+	if (universeGit && !production) return reply(404, "Not found");
+	if ((isUniverseCreate || universeGit) && !env.BUILDER_ARTIFACTS) return reply(503, "Repository unavailable");
 	let registeredRaw: string | undefined;
 	if (!isApi) {
-		if (!env.STANDALONE_REPOS) return null;
+		if (!env.STANDALONE_REPOS) return universeGit ? reply(503, "Repository registry unavailable") : null;
 		try {
 			const raw = await env.STANDALONE_REPOS.get(`repo:default/${route!.routeName}`);
-			if (raw === null) return null; // An unregistered default route belongs to the existing handler.
+			// Reserved project paths never fall back to the other default namespace.
+			if (raw === null) return universeGit ? reply(404, "Not found") : null;
 			registeredRaw = raw;
 		} catch { return reply(503, "Repository registry unavailable"); }
 	}
@@ -192,10 +207,11 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		const limited = await ipLimit(request, env);
 		if (limited) return limited;
 		const bearer = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "");
-		const principal = bearer && bearer[1]!.length <= 8192 ? await identity(bearer[1]!, env.EZIL_ID_AUDIENCES, fetcher, Math.floor(now / 1000)) : null;
+		const audiences = isUniverseCreate ? UNIVERSE_PRODUCTION_AUDIENCE : env.EZIL_ID_AUDIENCES;
+		const principal = bearer && bearer[1]!.length <= 8192 ? await identity(bearer[1]!, audiences, fetcher, Math.floor(now / 1000)) : null;
 		if (!principal) return reply(401, "EZiL ID sign-in required");
 		const sub = principal.sub;
-		const limiter = url.pathname === "/v2/repos" ? env.CREATE_RL : env.RL;
+		const limiter = isCreate ? env.CREATE_RL : env.RL;
 		if (!limiter) return reply(503, "Git rate limiter unavailable");
 		try { if (!(await limiter.limit({ key: `v2:${await digest(sub)}` })).success) return reply(429, "Too many Git requests"); }
 		catch { return reply(503, "Git rate limiter unavailable"); }
@@ -204,7 +220,8 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 			body = await smallJson(request) as Record<string, unknown>;
 		} catch (error) { return reply(error instanceof TooLarge ? 413 : 400, error instanceof TooLarge ? "Request too large" : "Invalid JSON"); }
 		if (!body || typeof body !== "object" || Array.isArray(body)) return reply(400, "Invalid JSON");
-		if (url.pathname === "/v2/repos") {
+		if (isUniverseCreate) return provisionUniverseRepository(env.STANDALONE_REPOS, env.BUILDER_ARTIFACTS!, sub, body, BUILDER_REMOTE);
+		if (isCreate) {
 			if (typeof body["name"] !== "string" || !REPO.test(body["name"]) || body["name"].includes("..") ||
 				body["name"].endsWith(".git")) return reply(400, "Invalid repository name");
 			if (body["visibility"] !== undefined && body["visibility"] !== "private" && body["visibility"] !== "public")
@@ -225,15 +242,24 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		}
 		const name = pathOf(body["repoURL"]);
 		if (!name || (body["scope"] !== "read" && body["scope"] !== "write")) return reply(400, "Invalid grant request");
+		const universeRepo = isUniverseRepositoryName(name);
+		if (universeRepo && !production) return reply(404, "Not found");
+		const artifacts = universeRepo ? env.BUILDER_ARTIFACTS : env.ARTIFACTS;
+		if (!artifacts) return reply(503, "Grant unavailable");
+		const remoteBase = universeRepo ? BUILDER_REMOTE : REMOTE;
 		let phase: GrantPhase = "registry_lookup";
 		try {
 			const record = await repoRecord(env, name);
 			const writer = record && (record.ownerSub === sub || record.writerSubs?.includes(sub) === true);
 			if (!record || (!writer && (body["scope"] === "write" || !record.publicRead))) return reply(403, "Repository unavailable");
+			const description = universeRepo ? await universeRepositoryDescription(record, name) : null;
+			if (universeRepo && description === null) return reply(403, "Repository unavailable");
 			phase = "repository_get";
-			using repo = await env.ARTIFACTS.get(name);
+			using repo = await artifacts.get(name);
 			phase = "repository_info";
-			if (!providerMatches(await repo.info(), record, name)) return reply(403, "Repository unavailable");
+			const info = await repo.info();
+			if (!providerMatches(info, record, name, remoteBase) ||
+				(universeRepo && info.description !== description)) return reply(403, "Repository unavailable");
 			const issued = Math.floor(clock() / 1000);
 			const ttl = Math.min(290, principal.exp - issued - 10);
 			if (!Number.isFinite(issued) || ttl < 60) return reply(401, "EZiL ID sign-in expires too soon");
@@ -276,7 +302,7 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		const tokenHash = await digest(token);
 		if (!(await env.RL.limit({ key: `v2:git:${tokenHash}` })).success) return reply(429, "Too many Git requests");
 		const record = await repoRecord(env, route.routeName, registeredRaw);
-		if (!record) return reply(403, "Repository unavailable");
+		if (!record || (universeGit && !(await universeRepositoryDescription(record, route.routeName)))) return reply(403, "Repository unavailable");
 		// An optional expiry hint can only request renewal; native validation still authorizes every forwarded token.
 		const expiryHint = /\?expires=([0-9]+)$/.exec(token)?.[1];
 		const hintedExpiry = expiryHint === undefined ? NaN : Number(expiryHint);
@@ -285,7 +311,8 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		for (const key of ["content-type", "content-encoding", "accept", "accept-encoding", "git-protocol", "user-agent"])
 			if (request.headers.has(key)) headers.set(key, request.headers.get(key)!);
 		headers.set("authorization", `Bearer ${token}`);
-		const upstream = await fetcher(`${REMOTE}${route.routeName}.git${route.rest}${route.rest === "/info/refs" ? url.search : ""}`,
+		const remoteBase = universeGit ? BUILDER_REMOTE : REMOTE;
+		const upstream = await fetcher(`${remoteBase}${route.routeName}.git${route.rest}${route.rest === "/info/refs" ? url.search : ""}`,
 			{ method: request.method, headers, redirect: "manual", ...(request.body ? { body: request.body, duplex: "half" } : {}) } as RequestInit);
 		if (upstream.status === 401) return challenge();
 		if (upstream.status === 403) return reply(403, "Repository unavailable");

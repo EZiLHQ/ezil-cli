@@ -1,5 +1,7 @@
 import { describe, expect, it, spyOn } from "bun:test";
 import { standalone, type StandaloneEnv } from "./standalone";
+import { sha256Hex } from "./sign";
+import { UNIVERSE_REPOSITORY_NAMESPACE } from "./universe-repository";
 
 const account = "2104e6f103f83b34f363985b093edc7c";
 const name = "os-code-url-20261110-a";
@@ -26,7 +28,7 @@ async function fixture(limitIp = false, invalidStatus = 403) {
 		JSON.stringify({ providerId: "fg1wtcrexaf7acl0", ownerSub: "auth0|owner", publicRead: true })]]);
 	const limitedKeys: string[] = [];
 	const providerCalls: string[] = [];
-	const nativeTokens = new Map<string, { repo: string; scope: "read" | "write"; expires: number }>();
+	const nativeTokens = new Map<string, { repo: string; scope: "read" | "write"; expires: number; namespace?: string }>();
 	let serial = 0;
 	let providerNow = now;
 	const env: StandaloneEnv = { EZIL_ID_AUDIENCES: `${audience},Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx`,
@@ -53,22 +55,23 @@ async function fixture(limitIp = false, invalidStatus = 403) {
 		const target = String(input);
 		calls.push(target);
 		if (target.endsWith("/.well-known/jwks.json")) return Response.json({ keys: [publicKey] });
-		if (target.startsWith(`https://${account}.artifacts.cloudflare.net/git/default/`)) {
+		if (target.startsWith(`https://${account}.artifacts.cloudflare.net/git/`)) {
 			expect(init?.redirect).toBe("manual");
 			const native = /^Bearer (.+)$/.exec(new Headers(init?.headers).get("authorization") ?? "")?.[1];
 			upstreamTokens.push(native ?? "");
 			const grant = nativeTokens.get(native ?? "");
 			if (!grant || grant.expires <= Math.floor(providerNow / 1000)) return new Response("invalid token", { status: invalidStatus });
-			if (!target.startsWith(`https://${account}.artifacts.cloudflare.net/git/default/${grant.repo}.git`))
+			if (!target.startsWith(`https://${account}.artifacts.cloudflare.net/git/${grant.namespace ?? "default"}/${grant.repo}.git`))
 				return new Response("foreign repo", { status: 403 });
 			if (target.includes("git-receive-pack") && grant.scope !== "write") return new Response("read only", { status: 403 });
 			return new Response("git-ok", { status: 200 });
 		}
 		throw new Error(`unexpected fetch ${target}`);
 	};
-	const send = (path: string, init: RequestInit = {}, time = now, clock: () => number = () => time) => {
+	const send = (path: string, init: RequestInit = {}, time = now, clock: () => number = () => time,
+		origin = "https://github.ezil.work") => {
 		providerNow = time;
-		return standalone(new Request(`https://github.ezil.work${path}`, init), env, fetcher, time, clock);
+		return standalone(new Request(`${origin}${path}`, init), env, fetcher, time, clock);
 	};
 	return { jwt, send, calls, records, limitedKeys, providerCalls, nativeTokens, upstreamTokens, env };
 }
@@ -453,4 +456,166 @@ describe("standalone Git v2", () => {
 		} finally { warning.mockRestore(); }
 	});
 
+});
+
+const projectId = "03b74110-1e20-4f33-8f61-84fad72e6597";
+const owner = "auth0|universe-owner";
+const builderRemote = `https://${account}.artifacts.cloudflare.net/git/${UNIVERSE_REPOSITORY_NAMESPACE}/`;
+
+async function universeFixture() {
+	const f = await fixture();
+	const repos = new Map<string, { id: string; name: string; remote: string; defaultBranch: string; readOnly: boolean; description: string | null }>();
+	const nativeInfo = (name: string, description: string | null = null) => ({
+		id: "cp1wtcrexaf7acl1", name, remote: `${builderRemote}${name}.git`, defaultBranch: "main", readOnly: false, description,
+	});
+	const builderCalls: string[] = [];
+	const artifacts: NonNullable<StandaloneEnv["BUILDER_ARTIFACTS"]> = {
+		create: async (name, options) => {
+			builderCalls.push(`create:${name}`);
+			expect(options).toMatchObject({ setDefaultBranch: "main", readOnly: false });
+			if (repos.has(name)) throw Object.assign(new Error("exists"), { code: "ALREADY_EXISTS" });
+			expect(options.description).toMatch(/^ezil-universe-project:[a-f0-9]{64}$/);
+			const info = nativeInfo(name, options.description);
+			repos.set(name, info);
+			return { ...info, token: "unused-provider-credential" };
+		},
+		get: async name => {
+			builderCalls.push(`get:${name}`);
+			const info = repos.get(name);
+			if (!info) throw Object.assign(new Error("absent"), { code: "NOT_FOUND" });
+			return {
+				info: async () => info,
+				createToken: async (scope, ttl) => {
+					builderCalls.push(`token:${name}:${scope}`);
+					const plaintext = "universe-fixture-scoped-provider-token";
+					const expires = Math.floor(now / 1000) + ttl;
+					f.nativeTokens.set(plaintext, { repo: name, scope, expires, namespace: UNIVERSE_REPOSITORY_NAMESPACE });
+					return { plaintext, scope, expiresAt: new Date(expires * 1000).toISOString() };
+				},
+				[Symbol.dispose]() {},
+			};
+		},
+	};
+	Object.assign(f.env, { API_ORIGIN: "https://api.ezil.work", BUILDER_ARTIFACTS: artifacts });
+	const name = `up-${(await sha256Hex(JSON.stringify(["https://id.ezil.work/", owner, projectId]))).slice(0, 48)}`;
+	const url = `https://github.ezil.work/default/${name}.git`;
+	const create = async (sub = owner, aud = audience, body: unknown = { projectId }, origin?: string) =>
+		f.send("/v2/repos/universe", { method: "POST", headers: { authorization: `Bearer ${await f.jwt(sub, aud)}` },
+			body: JSON.stringify(body) }, now, () => now, origin);
+	const grant = async (sub = owner, scope = "write", origin?: string) =>
+		f.send("/v2/git/grant", { method: "POST", headers: { authorization: `Bearer ${await f.jwt(sub)}` },
+			body: JSON.stringify({ repoURL: url, scope }) }, now, () => now, origin);
+	return { ...f, repos, nativeInfo, builderCalls, name, url, create, grant };
+}
+
+describe("production Universe projects", () => {
+	it("creates exactly one private repository, replays the binding, and opens it through the existing v2 grant", async () => {
+		const f = await universeFixture();
+		const created = await f.create();
+		const body = { projectId, repoURL: f.url, ref: "refs/heads/main", providerId: f.nativeInfo(f.name).id };
+		expect(created?.status).toBe(201);
+		expect(created?.headers.get("cache-control")).toBe("no-store");
+		expect(await created?.json()).toEqual(body);
+		const replay = await f.create();
+		expect(replay?.status).toBe(200);
+		expect(await replay?.json()).toEqual(body);
+		expect(f.builderCalls.filter(call => call.startsWith("create:"))).toEqual([`create:${f.name}`]);
+		expect(f.providerCalls).toEqual([]);
+		const denied = await f.grant("auth0|different", "read");
+		expect(denied?.status).toBe(403);
+		const grant = await f.grant();
+		expect(grant?.status).toBe(200);
+		const packet = await grant!.json() as { repository: { canonicalURL: string }; git: { token: string } };
+		expect(packet.repository.canonicalURL).toBe(f.url);
+		const response = await f.send(`/default/${f.name}.git/info/refs?service=git-upload-pack`, {
+			headers: { authorization: `Basic ${btoa(`ezil:${packet.git.token}`)}` },
+		});
+		expect(response?.status).toBe(200);
+		expect(f.calls).toContain(`${builderRemote}${f.name}.git/info/refs?service=git-upload-pack`);
+		const other = await f.create("auth0|different");
+		expect(other?.status).toBe(201);
+		expect((await other?.json() as { repoURL: string }).repoURL).not.toBe(f.url);
+	});
+
+	it("rejects staging or alias hosts, wrong audiences and body-supplied ownership", async () => {
+		const f = await universeFixture();
+		expect((await f.create(owner, "Mzvm4piCMAKy3ofhywuQDYstJLcYE3mx"))?.status).toBe(401);
+		expect((await f.create(owner, audience, { projectId, owner: "auth0|different" }))?.status).toBe(400);
+		expect((await f.create(owner, audience, { projectId: "invalid" }))?.status).toBe(400);
+		expect((await f.create(owner, audience, { projectId }, "https://git-staging.ezil.work"))?.status).toBe(404);
+		expect((await f.create(owner, audience, { projectId }, "https://git.ezil.work"))?.status).toBe(404);
+		Object.assign(f.env, { API_ORIGIN: "https://api-staging.ezil.work" });
+		expect((await f.create())?.status).toBe(404);
+		expect((await f.grant())?.status).toBe(404);
+		expect(f.builderCalls).toEqual([]);
+	});
+
+	it("keeps reserved Git paths out of legacy routing if a production binding is missing", async () => {
+		const f = await universeFixture();
+		const path = `/default/${f.name}.git/info/refs?service=git-upload-pack`;
+		expect((await f.send(path, {}))?.status).toBe(404);
+		expect((await f.send(path, {}, now, () => now, "https://git-staging.ezil.work"))?.status).toBe(404);
+		delete f.env.STANDALONE_REPOS;
+		expect((await f.send(path, {}))?.status).toBe(503);
+		delete f.env.BUILDER_ARTIFACTS;
+		expect((await f.send(path, {}))?.status).toBe(503);
+		expect(f.providerCalls).toEqual([]);
+		expect(f.builderCalls).toEqual([]);
+	});
+
+	it("keeps project creation subject-rate-limited", async () => {
+		const f = await universeFixture();
+		const keys: string[] = [];
+		f.env.CREATE_RL = { limit: async ({ key }) => { keys.push(key); return { success: false }; } };
+		expect((await f.create())?.status).toBe(429);
+		expect(keys).toEqual([`v2:${await sha256Hex(owner)}`]);
+		expect(f.builderCalls).toEqual([]);
+	});
+
+	it("retains explicitly registered collaboration without making a project public", async () => {
+		const f = await universeFixture();
+		expect((await f.create())?.status).toBe(201);
+		const key = `repo:default/${f.name}`;
+		const invitee = "auth0|invited";
+		f.records.set(key, JSON.stringify({ ...JSON.parse(f.records.get(key)!), writerSubs: [invitee] }));
+		expect((await f.grant(invitee))?.status).toBe(200);
+		expect((await f.grant("auth0|different", "read"))?.status).toBe(403);
+		expect((await f.create())?.status).toBe(200);
+	});
+
+	it("refuses an unrelated provider collision without recording a claim", async () => {
+		const f = await universeFixture();
+		f.repos.set(f.name, f.nativeInfo(f.name));
+		expect((await f.create())?.status).toBe(409);
+		expect(f.records.has(`universe-project:${f.name}`)).toBe(false);
+		expect(f.records.has(`repo:default/${f.name}`)).toBe(false);
+	});
+
+	it("refuses a conflicting native provenance marker even with a durable intent", async () => {
+		const f = await universeFixture();
+		f.records.set(`universe-project:${f.name}`, JSON.stringify({ ownerSub: owner, universeProjectId: projectId, publicRead: false }));
+		f.repos.set(f.name, f.nativeInfo(f.name, "a different marker"));
+		expect((await f.create())?.status).toBe(409);
+		expect(f.records.has(`repo:default/${f.name}`)).toBe(false);
+	});
+
+	it("recovers a registry write failure only through durable matching provisioning intent", async () => {
+		const f = await universeFixture();
+		const registry = f.env.STANDALONE_REPOS!;
+		const put = registry.put;
+		let fail = true;
+		registry.put = async (key, value) => {
+			if (fail && key === `repo:default/${f.name}`) { fail = false; throw new Error("registry request failed"); }
+			return put(key, value);
+		};
+		expect((await f.create())?.status).toBe(503);
+		expect(f.records.has(`repo:default/${f.name}`)).toBe(false);
+		expect((await f.grant())?.status).toBe(403);
+		expect((await f.create())?.status).toBe(200);
+		const wrong = { providerId: f.nativeInfo(f.name).id, ownerSub: "auth0|different", publicRead: false,
+			universeProjectId: projectId };
+		f.records.set(`repo:default/${f.name}`, JSON.stringify(wrong));
+		expect((await f.create())?.status).toBe(409);
+		expect((await f.grant("auth0|different"))?.status).toBe(403);
+	});
 });
