@@ -166,9 +166,11 @@ export async function confirmAssignmentBootstrap(repoURL: string, remote: string
 	async function git(path: string, expected: string, init: RequestInit = {}) {
 		const response = await fetcher(`${remote}/${path}`, { ...init, signal, redirect: "error", cache: "no-store",
 			headers: { ...headers, ...init.headers } });
-		if (response.status !== 200 || response.headers.get("content-type")?.split(";")[0]?.trim() !== expected) {
+		const type = response.headers.get("content-type")?.split(";")[0]?.trim();
+		if (response.status !== 200 || type !== expected) {
 			void response.body?.cancel().catch(() => {});
-			throw new Error("Git service refused");
+			const safeType = (type ?? "none").replace(/[^a-z0-9/+.-]/gi, "").slice(0, 80);
+			throw new Error(`Git service refused ${path.split("?")[0]} ${response.status} ${safeType}`);
 		}
 		return boundedReply(response);
 	}

@@ -38,6 +38,21 @@ export async function verifyAssignmentProvisioning(request: Request, env: Standa
 	return { attemptId, environment: environment as Environment, audience: environment === "staging" ? STAGING_AUDIENCE : UNIVERSE_PRODUCTION_AUDIENCE };
 }
 
+/** Diagnostics only: a phase name, booleans and sanitized provider error identity. Never tokens or bodies. */
+function provisionFailed(phase: string, detail: Record<string, boolean | number | string> = {}, error?: unknown) {
+	let errorName = "none", errorCode = "none", message = "none";
+	try {
+		if (error && typeof error === "object") {
+			const candidate = error as { name?: unknown; code?: unknown; message?: unknown };
+			if (typeof candidate.name === "string") errorName = candidate.name.replace(/[^A-Za-z]/g, "").slice(0, 40);
+			if (typeof candidate.code === "string") errorCode = candidate.code.replace(/[^A-Z_]/g, "").slice(0, 40);
+			if (typeof candidate.message === "string" && /^(Git [A-Za-z ]+|Git service refused [a-z/-]+ [0-9]{3} [A-Za-z0-9/+.-]*)$/.test(candidate.message))
+				message = candidate.message;
+		}
+	} catch { /* An exception accessor is not a diagnostic source. */ }
+	console.warn(JSON.stringify({ event: "assignment_provision_failed", phase, ...detail, errorName, errorCode, message }));
+}
+
 function providerError(error: unknown, code: string) {
 	return error !== null && typeof error === "object" && "code" in error && error.code === code;
 }
@@ -54,6 +69,7 @@ export async function provisionAssignmentRepository(registry: Registry, artifact
 	const matches = (data: { id: string; name: string; remote: string; defaultBranch: string }) =>
 		PROVIDER_ID.test(data.id) && data.name === name && data.remote === remote && data.defaultBranch === "main";
 
+	let phase = "registry_read";
 	try {
 		const raw = await registry.get(repoKey);
 		const record = raw === null ? undefined : JSON.parse(raw) as RepoRecord;
@@ -64,14 +80,20 @@ export async function provisionAssignmentRepository(registry: Registry, artifact
 		let created = false;
 		// The provider description gives a failed request durable provenance without publishing an unverified repository.
 		if (!registered) {
+			phase = "artifacts_create";
 			try {
 				const data = await artifacts.create(name, { setDefaultBranch: "main", readOnly: false, description });
-				if (!matches(data) || data.description !== description) return reply(503, "Repository creation unavailable");
+				if (!matches(data) || data.description !== description) {
+					provisionFailed("create_mismatch", { matches: matches(data), descriptionEchoed: data.description === description,
+						descriptionType: data.description === undefined ? "undefined" : data.description === null ? "null" : typeof data.description });
+					return reply(503, "Repository creation unavailable");
+				}
 				created = true;
 			} catch (error) {
 				if (!providerError(error, "ALREADY_EXISTS")) throw error;
 			}
 		}
+		phase = "artifacts_info";
 		using repo = await artifacts.get(name);
 		const info = await repo.info();
 		if (!matches(info) || info.readOnly || (registered && info.id !== record?.providerId)) return conflict();
@@ -83,12 +105,19 @@ export async function provisionAssignmentRepository(registry: Registry, artifact
 		if (!orphan && (!registered || record?.assignmentEnvironment !== undefined) && info.description !== description) return conflict();
 		if (registered && record?.assignmentEnvironment === undefined &&
 			info.description?.startsWith("ezil-universe-assignment:") && info.description !== description) return conflict();
+		phase = "native_token";
 		const native = await repo.createToken("write", 90);
 		const now = clock();
 		const expiry = Date.parse(native.expiresAt);
 		if (native.scope !== "write" || !TOKEN.test(native.plaintext) || !Number.isFinite(expiry) ||
-			expiry <= now || expiry > now + 100_000) return reply(503, "Repository creation unavailable");
+			expiry <= now || expiry > now + 100_000) {
+			provisionFailed("native_token_invalid", { scopeOk: native.scope === "write", tokenShapeOk: TOKEN.test(native.plaintext),
+				expiryFinite: Number.isFinite(expiry), expiryDeltaMs: Number.isFinite(expiry) ? expiry - now : -1 });
+			return reply(503, "Repository creation unavailable");
+		}
+		phase = "bootstrap";
 		const baseSha = await confirmAssignmentBootstrap(repoURL, remote, attemptId, native.plaintext, fetcher);
+		phase = "registry_write";
 		if (!registered) {
 			const stored: RepoRecord = orphan ? { providerId: info.id, ownerSub, publicRead: false }
 				: { providerId: info.id, ownerSub, publicRead: false, assignmentEnvironment: environment };
@@ -97,7 +126,11 @@ export async function provisionAssignmentRepository(registry: Registry, artifact
 		return Response.json({ attemptId, repoURL, providerId: info.id, ref: ASSIGNMENT_REF, baseSha },
 			{ status: created ? 201 : 200, headers: { "cache-control": "no-store" } });
 	} catch (error) {
-		if (error instanceof AssignmentBootstrapConflict) return conflict();
+		if (error instanceof AssignmentBootstrapConflict) {
+			provisionFailed("bootstrap_conflict");
+			return conflict();
+		}
+		provisionFailed(phase, {}, error);
 		return reply(503, "Repository creation unavailable");
 	}
 }
