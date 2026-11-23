@@ -75,7 +75,12 @@ export async function provisionAssignmentRepository(registry: Registry, artifact
 		using repo = await artifacts.get(name);
 		const info = await repo.info();
 		if (!matches(info) || info.readOnly || (registered && info.id !== record?.providerId)) return conflict();
-		if ((!registered || record?.assignmentEnvironment !== undefined) && info.description !== description) return conflict();
+		// An orphan: the former OS create (`/v2/repos`) made this repository but never registered it.
+		// Only the caller can own it, because `/v2/repos` prefixes every name with the creator's own
+		// subject hash, and `name` above is derived from the verified caller. It carries no description
+		// and is registered in the legacy shape, so later calls take the legacy path below.
+		const orphan = !registered && !created && (info.description === undefined || info.description === null || info.description === "");
+		if (!orphan && (!registered || record?.assignmentEnvironment !== undefined) && info.description !== description) return conflict();
 		if (registered && record?.assignmentEnvironment === undefined &&
 			info.description?.startsWith("ezil-universe-assignment:") && info.description !== description) return conflict();
 		const native = await repo.createToken("write", 90);
@@ -85,8 +90,9 @@ export async function provisionAssignmentRepository(registry: Registry, artifact
 			expiry <= now || expiry > now + 100_000) return reply(503, "Repository creation unavailable");
 		const baseSha = await confirmAssignmentBootstrap(repoURL, remote, attemptId, native.plaintext, fetcher);
 		if (!registered) {
-			await registry.put(repoKey, JSON.stringify({ providerId: info.id, ownerSub, publicRead: false,
-				assignmentEnvironment: environment } satisfies RepoRecord));
+			const stored: RepoRecord = orphan ? { providerId: info.id, ownerSub, publicRead: false }
+				: { providerId: info.id, ownerSub, publicRead: false, assignmentEnvironment: environment };
+			await registry.put(repoKey, JSON.stringify(stored));
 		}
 		return Response.json({ attemptId, repoURL, providerId: info.id, ref: ASSIGNMENT_REF, baseSha },
 			{ status: created ? 201 : 200, headers: { "cache-control": "no-store" } });

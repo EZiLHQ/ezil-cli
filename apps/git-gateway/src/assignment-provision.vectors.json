@@ -1,0 +1,38 @@
+{
+	"contract": "ezil.git-gateway.universe-assignment-provision/v1",
+	"request": {
+		"origin": "https://github.ezil.work",
+		"method": "POST",
+		"path": "/v2/repos/universe/assignments",
+		"headers": {
+			"authorization": "Bearer <token>",
+			"content-type": "application/json",
+			"timestampHeader": "x-ezil-assignment-provision-timestamp",
+			"signatureHeader": "x-ezil-assignment-provision-signature"
+		},
+		"maxClockSkewMs": 60000
+	},
+	"vector": {
+		"secret": "synthetic-assignment-provision-secret-0123456789abcdef",
+		"timestamp": "1795435200000",
+		"token": "eyJhbGciOiJSUzI1NiJ9.synthetic-vector-claims.synthetic-vector-signature",
+		"subject": "auth0|vector-owner",
+		"body": "{\"attemptId\":\"6ca895d2-c89b-44cd-864b-7647fbd85300\",\"environment\":\"staging\"}",
+		"bearerSha256": "9620a04dc17c6dc497304113cf5bfbed60f62209993ce98a81f2a7fe741d19b4",
+		"signingString": "1795435200000.POST /v2/repos/universe/assignments.9620a04dc17c6dc497304113cf5bfbed60f62209993ce98a81f2a7fe741d19b4.{\"attemptId\":\"6ca895d2-c89b-44cd-864b-7647fbd85300\",\"environment\":\"staging\"}",
+		"signature": "a8b4a804b622913b440edf229eac63eea230411f8d95c7202a704ac46cf3fc1f"
+	},
+	"reply": {
+		"statuses": [
+			200,
+			201
+		],
+		"body": {
+			"attemptId": "6ca895d2-c89b-44cd-864b-7647fbd85300",
+			"repoURL": "https://github.ezil.work/default/u-287816e4de33ddcf-a-6ca895d2-c89b-44cd-864b-7647fbd85300.git",
+			"providerId": "fg1wtcrexaf7acl0",
+			"ref": "refs/heads/main",
+			"baseSha": "8d3c1f0e6b2a4c5d7e9f0a1b2c3d4e5f6a7b8c9d"
+		}
+	}
+}

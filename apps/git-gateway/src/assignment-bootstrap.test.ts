@@ -57,3 +57,49 @@ it.skipIf(!gitAvailable)("bootstraps once, reconciles the exact historical root,
 		rmSync(cwd, { force: true, recursive: true });
 	}
 });
+
+it.skipIf(!gitAvailable)("refuses a seeded head whose message, tree or author differs from the OS bootstrap", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "ezil-assignment-git-"));
+	try {
+		function git(args: string[], stdin?: Uint8Array | string, env = process.env): Uint8Array<ArrayBuffer> {
+			const result = Bun.spawnSync(["git", ...args], { cwd, stdin: typeof stdin === "string" ? new TextEncoder().encode(stdin) : stdin, env, stdout: "pipe", stderr: "pipe" });
+			if (!result.success) throw new Error(result.stderr.toString());
+			return new Uint8Array(result.stdout);
+		}
+		const text = new TextDecoder();
+		git(["init", "--bare", "--initial-branch=main", "."]);
+		const fetcher = async (input: Request | URL | string, init?: RequestInit) => {
+			const url = new URL(String(input));
+			const service = url.searchParams.get("service") ?? url.pathname.split("/").at(-1)!;
+			const isAdvertisement = url.searchParams.has("service");
+			const output = git([service.slice(4), "--stateless-rpc", ...(isAdvertisement ? ["--advertise-refs"] : []), "."],
+				init?.body instanceof Uint8Array ? init.body : undefined);
+			return new Response(output, { headers: {
+				"content-type": "application/x-" + service + "-" + (isAdvertisement ? "advertisement" : "result"),
+			} });
+		};
+		const confirm = () => confirmAssignmentBootstrap(repoURL, remote, attemptId, token, fetcher);
+		const seeded = await confirm();
+		const tree = text.decode(git(["rev-parse", seeded + "^{tree}"])).trim();
+		const identity = (name: string, email: string) => ({ ...process.env, GIT_AUTHOR_NAME: name, GIT_AUTHOR_EMAIL: email,
+			GIT_AUTHOR_DATE: "@1795000000 +0000", GIT_COMMITTER_NAME: name, GIT_COMMITTER_EMAIL: email,
+			GIT_COMMITTER_DATE: "@1795000000 +0000" });
+		const os = identity("EZiL OS", "noreply@ezil.work");
+		const readme = text.decode(git(["hash-object", "-w", "--stdin"], "# Something else\n")).trim();
+		const ezil = text.decode(git(["rev-parse", tree + ":.ezil"])).trim();
+		const otherTree = text.decode(git(["mktree"], `040000 tree ${ezil}\t.ezil\n100644 blob ${readme}\tREADME.md\n`)).trim();
+		const cases = {
+			message: text.decode(git(["commit-tree", tree], "Initialize EZiL assignment 00000000-0000-4000-8000-000000000000\n", os)).trim(),
+			tree: text.decode(git(["commit-tree", otherTree], "Initialize EZiL assignment " + attemptId + "\n", os)).trim(),
+			author: text.decode(git(["commit-tree", tree], "Initialize EZiL assignment " + attemptId + "\n",
+				identity("Someone", "someone@example.com"))).trim(),
+		};
+		for (const [label, commit] of Object.entries(cases)) {
+			git(["update-ref", "refs/heads/main", commit]);
+			await expect(confirm(), label).rejects.toThrow();
+			expect(text.decode(git(["rev-parse", "refs/heads/main"])).trim()).toBe(commit);
+		}
+	} finally {
+		rmSync(cwd, { force: true, recursive: true });
+	}
+});
