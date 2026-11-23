@@ -1,4 +1,5 @@
 /** Standalone Git for the default Artifacts namespace. No project or task service participates. */
+import { ASSIGNMENT_CREATE_PATH, provisionAssignmentRepository, verifyAssignmentProvisioning } from "./assignment-repository";
 import { parseGitRoutePath } from "@ezil/cli-contract/git-gateway";
 import { PRODUCTION_GIT_ORIGIN, PRODUCTION_WORKS_ORIGIN, UNIVERSE_PRODUCTION_AUDIENCE,
 	isUniverseRepositoryName, provisionUniverseRepository, universeRepositoryDescription, UNIVERSE_REPOSITORY_NAMESPACE,
@@ -33,6 +34,8 @@ interface KV {
 }
 export interface StandaloneEnv {
 	readonly API_ORIGIN?: string;
+	UNIVERSE_ASSIGNMENT_PROVISION_STAGING_SECRET?: string;
+	UNIVERSE_ASSIGNMENT_PROVISION_PRODUCTION_SECRET?: string;
 	STANDALONE_REPOS?: KV;
 	ARTIFACTS?: ArtifactsBinding;
 	BUILDER_ARTIFACTS?: ArtifactsBinding;
@@ -51,7 +54,7 @@ interface ArtifactsBinding {
 	get(name: string): Promise<ArtifactsRepoHandle>;
 }
 export interface RepoRecord {
-	providerId: string; ownerSub: string; publicRead: boolean; universeProjectId?: string;
+	providerId: string; ownerSub: string; publicRead: boolean; universeProjectId?: string; assignmentEnvironment?: "staging" | "production";
 	/** Explicit repository collaborators, maintained by the authorized registry operator. */
 	writerSubs?: string[];
 }
@@ -93,7 +96,7 @@ function failedNativeGrant(phase: GrantPhase, error: unknown): void {
 }
 
 class TooLarge extends Error {}
-async function smallJson(request: Request): Promise<unknown> {
+async function smallJson(request: Request): Promise<{ raw: string; body: unknown }> {
 	if (!request.body) throw new Error("Missing body");
 	const reader = request.body.getReader();
 	const chunks: Uint8Array[] = [];
@@ -109,7 +112,8 @@ async function smallJson(request: Request): Promise<unknown> {
 		const all = new Uint8Array(size);
 		let offset = 0;
 		for (const chunk of chunks) { all.set(chunk, offset); offset += chunk.byteLength; }
-		return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(all));
+		const raw = new TextDecoder("utf-8", { fatal: true }).decode(all);
+		return { raw, body: JSON.parse(raw) as unknown };
 	} finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
 }
 
@@ -179,9 +183,13 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 	now = Date.now(), clock: () => number = Date.now): Promise<Response | null> {
 	const url = new URL(request.url);
 	const isUniverseCreate = url.pathname === UNIVERSE_REPOSITORY_PATH;
+	const isAssignmentCreate = url.pathname === ASSIGNMENT_CREATE_PATH;
 	const production = url.origin === PRODUCTION_GIT_ORIGIN && env.API_ORIGIN === PRODUCTION_WORKS_ORIGIN;
 	if (isUniverseCreate && !production) return reply(404, "Not found");
-	const isCreate = isUniverseCreate || url.pathname === "/v2/repos";
+	if (isAssignmentCreate && (!production || url.search ||
+		(!env.UNIVERSE_ASSIGNMENT_PROVISION_STAGING_SECRET && !env.UNIVERSE_ASSIGNMENT_PROVISION_PRODUCTION_SECRET)))
+		return reply(404, "Not found");
+	const isCreate = isUniverseCreate || isAssignmentCreate || url.pathname === "/v2/repos";
 	const isApi = isCreate || url.pathname === "/v2/git/grant";
 	const route = parseGitRoutePath(url.pathname);
 	if (!isApi && (!route || route.routeNamespace !== "default" || route.rest === "")) return null;
@@ -207,7 +215,20 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		const limited = await ipLimit(request, env);
 		if (limited) return limited;
 		const bearer = /^Bearer (\S+)$/.exec(request.headers.get("authorization") ?? "");
-		const audiences = isUniverseCreate ? UNIVERSE_PRODUCTION_AUDIENCE : env.EZIL_ID_AUDIENCES;
+		let assignment: Exclude<Awaited<ReturnType<typeof verifyAssignmentProvisioning>>, Response> | undefined;
+		if (isAssignmentCreate) {
+			if (!bearer || bearer[1]!.length > 8192) return reply(401, "EZiL ID sign-in required");
+			let payload;
+			try { payload = await smallJson(request); }
+			catch (error) { return reply(error instanceof TooLarge ? 413 : 400, "Invalid assignment request"); }
+			if (!payload.body || typeof payload.body !== "object" || Array.isArray(payload.body))
+				return reply(400, "Invalid assignment request");
+			const verified = await verifyAssignmentProvisioning(request, env, payload.raw,
+				payload.body as Record<string, unknown>, bearer[1]!, now);
+			if (verified instanceof Response) return verified;
+			assignment = verified;
+		}
+		const audiences = assignment?.audience ?? (isUniverseCreate ? UNIVERSE_PRODUCTION_AUDIENCE : env.EZIL_ID_AUDIENCES);
 		const principal = bearer && bearer[1]!.length <= 8192 ? await identity(bearer[1]!, audiences, fetcher, Math.floor(now / 1000)) : null;
 		if (!principal) return reply(401, "EZiL ID sign-in required");
 		const sub = principal.sub;
@@ -215,9 +236,11 @@ export async function standalone(request: Request, env: StandaloneEnv, fetcher: 
 		if (!limiter) return reply(503, "Git rate limiter unavailable");
 		try { if (!(await limiter.limit({ key: `v2:${await digest(sub)}` })).success) return reply(429, "Too many Git requests"); }
 		catch { return reply(503, "Git rate limiter unavailable"); }
+		if (assignment) return provisionAssignmentRepository(env.STANDALONE_REPOS, env.ARTIFACTS, sub,
+			assignment.attemptId, assignment.environment, REMOTE, fetcher, clock);
 		let body: Record<string, unknown>;
 		try {
-			body = await smallJson(request) as Record<string, unknown>;
+			body = (await smallJson(request)).body as Record<string, unknown>;
 		} catch (error) { return reply(error instanceof TooLarge ? 413 : 400, error instanceof TooLarge ? "Request too large" : "Invalid JSON"); }
 		if (!body || typeof body !== "object" || Array.isArray(body)) return reply(400, "Invalid JSON");
 		if (isUniverseCreate) return provisionUniverseRepository(env.STANDALONE_REPOS, env.BUILDER_ARTIFACTS!, sub, body, BUILDER_REMOTE);
