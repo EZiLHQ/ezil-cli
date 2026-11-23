@@ -130,7 +130,14 @@ export class AssignmentBootstrapConflict extends Error {}
 /** The former OS bootstrap used an attempt-time date. Confirm the exact same root tree without rewriting it. */
 async function matchesLegacyBootstrappedHead(response: Uint8Array<ArrayBuffer>, head: string, tree: string, attemptId: string) {
 	if (decoder.decode(response.subarray(0, 8)) !== "0008NAK\n") return false;
-	const body = response.subarray(8);
+	let body = response.subarray(8);
+	// Cloudflare Artifacts ends a non-side-band upload-pack result with a flush-pkt ("0000") after the pack;
+	// plain git does not. Drop it only when the pack checksum then verifies at the shifted position.
+	const flush = body.length >= 37 && body.subarray(-4).every(byte => byte === 0x30);
+	if (flush) {
+		const trimmed = body.subarray(0, -4);
+		if (hex(await sha1(trimmed.subarray(0, -20))) === hex(trimmed.subarray(-20))) body = trimmed;
+	}
 	if (body.length < 33 || decoder.decode(body.subarray(0, 4)) !== "PACK") return false;
 	const header = new DataView(body.buffer, body.byteOffset, body.byteLength);
 	if (![2, 3].includes(header.getUint32(4)) || header.getUint32(8) !== 5 ||

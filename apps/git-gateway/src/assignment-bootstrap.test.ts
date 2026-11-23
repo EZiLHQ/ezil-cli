@@ -105,3 +105,49 @@ it.skipIf(!gitAvailable)("refuses a seeded head whose message, tree or author di
 		rmSync(cwd, { force: true, recursive: true });
 	}
 });
+
+it.skipIf(!gitAvailable)("accepts the OS-seeded head when Artifacts appends a flush-pkt after the pack", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "ezil-assignment-git-"));
+	try {
+		function git(args: string[], stdin?: Uint8Array | string, env = process.env): Uint8Array<ArrayBuffer> {
+			const result = Bun.spawnSync(["git", ...args], { cwd, stdin: typeof stdin === "string" ? new TextEncoder().encode(stdin) : stdin, env, stdout: "pipe", stderr: "pipe" });
+			if (!result.success) throw new Error(result.stderr.toString());
+			return new Uint8Array(result.stdout);
+		}
+		const text = new TextDecoder();
+		git(["init", "--bare", "--initial-branch=main", "."]);
+		let flush = false;
+		const fetcher = async (input: Request | URL | string, init?: RequestInit) => {
+			const url = new URL(String(input));
+			const service = url.searchParams.get("service") ?? url.pathname.split("/").at(-1)!;
+			const isAdvertisement = url.searchParams.has("service");
+			let output = git([service.slice(4), "--stateless-rpc", ...(isAdvertisement ? ["--advertise-refs"] : []), "."],
+				init?.body instanceof Uint8Array ? init.body : undefined);
+			// Measured on a production Artifacts repo (2026-11-23): "0008NAK\n" + PACK + checksum + "0000".
+			if (flush && !isAdvertisement && service === "git-upload-pack") {
+				const framed = new Uint8Array(output.length + 4);
+				framed.set(output);
+				framed.set(new TextEncoder().encode("0000"), output.length);
+				output = framed;
+			}
+			return new Response(output, { headers: {
+				"content-type": "application/x-" + service + "-" + (isAdvertisement ? "advertisement" : "result"),
+			} });
+		};
+		const confirm = () => confirmAssignmentBootstrap(repoURL, remote, attemptId, token, fetcher);
+		const seeded = await confirm();
+		const tree = text.decode(git(["rev-parse", seeded + "^{tree}"])).trim();
+		const os = { ...process.env, GIT_AUTHOR_NAME: "EZiL OS", GIT_AUTHOR_EMAIL: "noreply@ezil.work",
+			GIT_AUTHOR_DATE: "@1795432977 +0000", GIT_COMMITTER_NAME: "EZiL OS", GIT_COMMITTER_EMAIL: "noreply@ezil.work",
+			GIT_COMMITTER_DATE: "@1795432977 +0000" };
+		const legacy = text.decode(git(["commit-tree", tree], "Initialize EZiL assignment " + attemptId + "\n", os)).trim();
+		git(["update-ref", "refs/heads/main", legacy]);
+		flush = true;
+		expect(await confirm()).toBe(legacy);
+		const changed = text.decode(git(["commit-tree", tree], "Initialize EZiL assignment 00000000-0000-4000-8000-000000000000\n", os)).trim();
+		git(["update-ref", "refs/heads/main", changed]);
+		await expect(confirm()).rejects.toThrow();
+	} finally {
+		rmSync(cwd, { force: true, recursive: true });
+	}
+});
