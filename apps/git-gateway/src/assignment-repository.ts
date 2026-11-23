@@ -48,6 +48,8 @@ function provisionFailed(phase: string, detail: Record<string, boolean | number 
 			if (typeof candidate.code === "string") errorCode = candidate.code.replace(/[^A-Z_]/g, "").slice(0, 40);
 			if (typeof candidate.message === "string" && /^(Git [A-Za-z ]+|Git service refused [a-z/-]+ [0-9]{3} [A-Za-z0-9/+.-]*)$/.test(candidate.message))
 				message = candidate.message;
+			else if (errorName === "TypeError" && typeof candidate.message === "string")
+				message = candidate.message.replace(/https?:\/\/\S+/g, "<url>").replace(/[^A-Za-z0-9 .,:'"()<>_-]/g, "").slice(0, 200);
 		}
 	} catch { /* An exception accessor is not a diagnostic source. */ }
 	console.warn(JSON.stringify({ event: "assignment_provision_failed", phase, ...detail, errorName, errorCode, message }));

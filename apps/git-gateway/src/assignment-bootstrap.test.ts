@@ -24,7 +24,9 @@ it.skipIf(!gitAvailable)("bootstraps once, reconciles the exact historical root,
 		const fetcher = async (input: Request | URL | string, init?: RequestInit) => {
 			const url = new URL(String(input));
 			expect(url.origin + (url.pathname.split("/").slice(0, 2).join("/"))).toBe(remote);
-			expect(init?.redirect).toBe("error");
+			// Cloudflare Workers reject redirect "error" and a cache option on subrequests with a TypeError.
+			expect(init?.redirect).toBe("manual");
+			expect(init?.cache).toBeUndefined();
 			expect(new Headers(init?.headers).get("authorization")).toBe("Bearer " + token);
 			const service = url.searchParams.get("service") ?? url.pathname.split("/").at(-1)!;
 			const isAdvertisement = url.searchParams.has("service");

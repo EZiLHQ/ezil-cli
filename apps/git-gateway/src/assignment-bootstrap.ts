@@ -164,7 +164,7 @@ export async function confirmAssignmentBootstrap(repoURL: string, remote: string
 	const signal = AbortSignal.timeout(20_000);
 	const headers = { authorization: `Bearer ${token}` };
 	async function git(path: string, expected: string, init: RequestInit = {}) {
-		const response = await fetcher(`${remote}/${path}`, { ...init, signal, redirect: "error", cache: "no-store",
+		const response = await fetcher(`${remote}/${path}`, { ...init, signal, redirect: "manual",
 			headers: { ...headers, ...init.headers } });
 		const type = response.headers.get("content-type")?.split(";")[0]?.trim();
 		if (response.status !== 200 || type !== expected) {
