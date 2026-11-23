@@ -73,7 +73,7 @@ async function fixture(limitIp = false, invalidStatus = 403) {
 		providerNow = time;
 		return standalone(new Request(`${origin}${path}`, init), env, fetcher, time, clock);
 	};
-	return { jwt, send, calls, records, limitedKeys, providerCalls, nativeTokens, upstreamTokens, env };
+	return { jwt, send, calls, records, limitedKeys, providerCalls, nativeTokens, upstreamTokens, env, fetcher };
 }
 
 describe("standalone Git v2", () => {
@@ -617,5 +617,99 @@ describe("production Universe projects", () => {
 		f.records.set(`repo:default/${f.name}`, JSON.stringify(wrong));
 		expect((await f.create())?.status).toBe(409);
 		expect((await f.grant("auth0|different"))?.status).toBe(403);
+	});
+});
+
+describe("Universe assignment provisioning", () => {
+	it("requires the canonical host, exact signed body and matching staging actor", async () => {
+		const f = await fixture();
+		const path = "/v2/repos/universe/assignments";
+		const stagingAudience = "nIc7fjrC4sSThRImucnPKmPZzc1Rr0Oh";
+		const body = JSON.stringify({ attemptId: "6ca895d2-c89b-44cd-864b-7647fbd85300", environment: "staging" });
+		const secret = "synthetic-staging-assignment-signature-secret";
+		const env = { ...f.env, API_ORIGIN: "https://api.ezil.work" };
+		const jwt = await f.jwt("auth0|assignment-owner", stagingAudience);
+		const productionJwt = await f.jwt("auth0|assignment-owner");
+		const secondJwt = await f.jwt("auth0|other-owner", stagingAudience);
+		const sign = async (token: string, signedBody = body, time = now) => {
+			const text = new TextEncoder();
+			const key = await crypto.subtle.importKey("raw", text.encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+			const tokenHash = await sha256Hex(token);
+			const mac = new Uint8Array(await crypto.subtle.sign("HMAC", key, text.encode(
+				String(time) + ".POST " + path + "." + tokenHash + "." + signedBody)));
+			return { "x-ezil-assignment-provision-timestamp": String(time),
+				"x-ezil-assignment-provision-signature": Array.from(mac, byte => byte.toString(16).padStart(2, "0")).join("") };
+		};
+		const send = (token: string, proof: Record<string, string>, raw = body, origin = "https://github.ezil.work") =>
+			standalone(new Request(origin + path, { method: "POST", headers: { ...proof, authorization: "Bearer " + token }, body: raw }),
+				env, f.fetcher, now);
+		expect((await send(jwt, await sign(jwt)))?.status).toBe(404);
+		env.UNIVERSE_ASSIGNMENT_PROVISION_STAGING_SECRET = secret;
+		expect((await send(jwt, await sign(jwt), body, "https://git-staging.ezil.work"))?.status).toBe(404);
+		expect((await send(jwt, await sign(jwt, body, now - 61_000)))?.status).toBe(403);
+		expect((await send(secondJwt, await sign(jwt)))?.status).toBe(403);
+		expect((await send(jwt, await sign(jwt), body + " "))?.status).toBe(403);
+		expect((await send(productionJwt, await sign(productionJwt)))?.status).toBe(401);
+		const prodBody = body.replace("staging", "production");
+		expect((await send(productionJwt, await sign(productionJwt, prodBody), prodBody))?.status).toBe(404);
+		expect(f.providerCalls).toHaveLength(0);
+		const actor = "auth0|assignment-owner";
+		const prefix = (await sha256Hex(actor)).slice(0, 16);
+		const attemptId = JSON.parse(body).attemptId;
+		const name = "u-" + prefix + "-a-" + attemptId;
+		const remote = "https://" + account + ".artifacts.cloudflare.net/git/default/" + name + ".git";
+		let created: { id: string; name: string; remote: string; defaultBranch: string; description?: string } | undefined;
+		let head: string | undefined;
+		let creates = 0;
+		let pushes = 0;
+		env.ARTIFACTS = {
+			async create(repoName, config) {
+				expect(repoName).toBe(name);
+				expect(config.readOnly).toBe(false);
+				creates += 1;
+				created = { id: "fg1wtcrexaf7acl0", name, remote, defaultBranch: "main", ...(config.description ? { description: config.description } : {}) };
+				return { ...created, token: "unused" };
+			},
+			async get(repoName) {
+				expect(repoName).toBe(name);
+				return {
+					async info() { return { ...created!, readOnly: false }; },
+					async createToken() { return { plaintext: "synthetic-assignment-native-token", scope: "write", expiresAt: new Date(now + 90_000).toISOString() }; },
+					[Symbol.dispose]() {},
+				};
+			},
+		};
+		const provider = async (input: string | URL | Request, init?: RequestInit) => {
+			const url = new URL(String(input));
+			if (!url.href.startsWith(remote)) return f.fetcher(input, init);
+			expect(new Headers(init?.headers).get("authorization")).toBe("Bearer synthetic-assignment-native-token");
+			const pkt = (line: string) => (line.length + 4).toString(16).padStart(4, "0") + line;
+			if (url.search) {
+				const service = url.searchParams.get("service")!;
+				const ref = head ? head + " refs/heads/main\n" : "0".repeat(40) + " capabilities^{}\0report-status\n";
+				return new Response(pkt("# service=" + service + "\n") + "0000" + pkt(ref) + "0000",
+					{ headers: { "content-type": "application/x-" + service + "-advertisement" } });
+			}
+			expect(url.href).toBe(remote + "/git-receive-pack");
+			const frame = new TextDecoder().decode((init?.body as Uint8Array).subarray(0, 100));
+			const fields = frame.slice(4).split(" ");
+			expect(fields[0]).toBe("0".repeat(40));
+			head = fields[1];
+			pushes += 1;
+			return new Response("ignored", { headers: { "content-type": "application/x-git-receive-pack-result" } });
+		};
+		const authenticated = async () => standalone(new Request("https://github.ezil.work" + path, {
+			method: "POST", headers: { ...await sign(jwt), authorization: "Bearer " + jwt }, body,
+		}), env, provider, now, () => now);
+		const first = await authenticated();
+		expect(first?.status).toBe(201);
+		expect(await first?.json()).toEqual({ attemptId, repoURL: "https://github.ezil.work/default/" + name + ".git",
+			providerId: created!.id, ref: "refs/heads/main", baseSha: head });
+		expect(JSON.parse(f.records.get("repo:default/" + name)!)).toEqual({
+			ownerSub: actor, publicRead: false, providerId: created!.id, assignmentEnvironment: "staging",
+		});
+		expect((await authenticated())?.status).toBe(200);
+		expect(creates).toBe(1);
+		expect(pushes).toBe(1);
 	});
 });

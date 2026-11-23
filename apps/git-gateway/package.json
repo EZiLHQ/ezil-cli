@@ -6,7 +6,8 @@
 		"typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.dev.json"
 	},
 	"dependencies": {
-		"@ezil/cli-contract": "workspace:*"
+		"@ezil/cli-contract": "workspace:*",
+		"fflate": "0.8.2"
 	},
 	"devDependencies": {
 		"wrangler": "^4.42.0"
